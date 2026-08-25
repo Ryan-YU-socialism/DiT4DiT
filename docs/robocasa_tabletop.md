@@ -72,9 +72,12 @@ You can download our pretrained DiT4DiT-RoboCasa-GR1 checkpoint from Hugging Fac
 huggingface-cli download mondo-robotics/dit4dit-model --include "dit4dit_robocasa_gr1/*" --local-dir /path/to/dit4dit-model
 ```
 
-See the [Model Zoo](../README.md#model-zoo) for all available checkpoints.
+> **Stage 1 note:** the published checkpoint predates the action-conditioned
+> planner. It can reproduce the base-policy evaluation, but Stage 1 requires a
+> checkpoint retrained with `framework.stage1.enabled=true`.
 
-> **Note:** After downloading, remember to update **line 58** of `config.yaml` in the checkpoint directory to point to your local Cosmos-Predict2.5-2B path.
+> **Note:** After downloading, update `framework.cosmos25.base_model` in the
+> checkpoint run directory's `config.yaml` to your local Cosmos-Predict2.5-2B path.
 
 
 
@@ -84,7 +87,7 @@ See the [Model Zoo](../README.md#model-zoo) for all available checkpoints.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python deployment/model_server/server_policy.py \
-  --ckpt_path /path/to/checkpoint.pt \
+  --ckpt_path /path/to/run/checkpoints/steps_50000_pytorch_model.pt \
   --port 6398 \
   --use_bf16
 ```
@@ -97,7 +100,7 @@ CUDA_VISIBLE_DEVICES=0 python deployment/model_server/server_policy.py \
 python examples/Robocasa_tabletop/eval_files/simulation_env.py \
   --args.env_name "gr1_unified/PnPMilkToMicrowaveClose_GR1ArmsAndWaistFourierHands_Env" \
   --args.port 6398 \
-  --args.pretrained_path /path/to/checkpoint.pt \
+  --args.pretrained_path /path/to/run/checkpoints/steps_50000_pytorch_model.pt \
   --args.n_episodes 50
 ```
 
@@ -107,11 +110,11 @@ Run all 24 evaluation environments across multiple GPUs:
 
 ```bash
 bash examples/Robocasa_tabletop/eval_files/batch_eval_args.sh \
-  /path/to/checkpoint.pt \   # Checkpoint path
-  1 \                         # Number of parallel envs
-  720 \                       # Max episode steps
-  12 \                        # Action chunk length
-  "0,1,2,3"                   # GPU IDs
+  /path/to/run/checkpoints/steps_50000_pytorch_model.pt \
+  1 \
+  720 \
+  12 \
+  "0,1,2,3"
 ```
 
 This script automatically:
@@ -119,4 +122,3 @@ This script automatically:
 2. Distributes environments across GPUs
 3. Runs 50 episodes per environment
 4. Saves videos and logs
-

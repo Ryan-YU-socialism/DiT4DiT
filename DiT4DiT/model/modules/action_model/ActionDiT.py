@@ -318,7 +318,24 @@ class FlowmatchingActionHead(nn.Module):
         return loss
 
     @torch.no_grad()
-    def predict_action(self, vl_embs: torch.Tensor, state: torch.Tensor = None) -> torch.Tensor:
+    def predict_action(
+        self,
+        vl_embs: torch.Tensor,
+        state: torch.Tensor = None,
+        num_candidates: int = 1,
+    ) -> torch.Tensor:
+        """Sample one or more trajectories per observation.
+
+        Returns ``(B,T,D)`` for the legacy one-candidate path and ``(B,K,T,D)``
+        when ``num_candidates > 1``.
+        """
+        if num_candidates < 1:
+            raise ValueError("num_candidates must be >= 1")
+        original_batch_size = vl_embs.shape[0]
+        if num_candidates > 1:
+            vl_embs = vl_embs.repeat_interleave(num_candidates, dim=0)
+            if state is not None:
+                state = state.repeat_interleave(num_candidates, dim=0)
         # Set initial actions as the sampled noise.
         batch_size = vl_embs.shape[0]
         device = vl_embs.device
@@ -366,6 +383,8 @@ class FlowmatchingActionHead(nn.Module):
 
             # Update actions using euler integration (stepping from noise toward clean).
             actions = actions - dt * pred_velocity
+        if num_candidates > 1:
+            return actions.reshape(original_batch_size, num_candidates, *actions.shape[1:])
         return actions
 
     @property

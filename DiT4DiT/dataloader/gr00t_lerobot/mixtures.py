@@ -385,20 +385,5 @@ DATASET_NAMED_MIXTURES = {
     "multi_robot": [
         ("LEROBOT_LIBERO_DATA/libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
         # ("OXE_LEROBOT_DATASET/bridge_orig_1.0.0_lerobot", 1.0, "oxe_bridge"),
-    ],
-
-
-    "real_robot_all": [
-        ("pnp_eggplant_lh_200ep_26_1_28", 1.0, "g1_body29_aloha_arms_only"),
-        ("pnp_corn_middle_drawer", 1.0, "g1_body29_aloha_arms_only"),
-        ("pnp_plate", 1.0, "g1_body29_aloha_arms_only"),
-        ("arrange_flower", 1.0, "g1_body29_aloha_arms_only"),
-        ("move_spoon", 1.0, "g1_body29_aloha_arms_only"),
-        ("stack_cups", 1.0, "g1_body29_aloha_arms_only"),
-        ("packaging", 1.0, "g1_body29_aloha_arms_only"),
-    ],
-    "g1_decoupled_wbc": [
-        ("your_g1_dataset_name", 1.0, "g1_body29_aloha_full_body"),
     ]
 }
-

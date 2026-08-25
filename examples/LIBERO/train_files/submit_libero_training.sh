@@ -76,7 +76,7 @@ srun --jobid $SLURM_JOBID bash -c 'accelerate launch \
   --framework.cosmos25.flow_matching.time_distribution uniform \
   --framework.cosmos25.flow_matching.high_sigma_ratio null \
   --framework.cosmos25.flow_matching.high_sigma_min null \
-  --trainer.framework.cosmos25.conditional_frame_timestep 0.0001 \
+  --framework.cosmos25.conditional_frame_timestep 0.0001 \
   --datasets.vla_data.action_video_freq_ratio 2 \
   --run_root_dir '${run_root_dir}' \
   --run_id '${run_id}' \

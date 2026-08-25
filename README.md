@@ -1,267 +1,303 @@
-<div align="center">
+# DiT4DiT + FOREWARN：Stage 1
 
-  <img src="media/logo.svg" width="480" alt="DiT4DiT">
+本仓库实现研究路线图的第一阶段：在 DiT4DiT 基础策略上生成多条动作候选，用动作条件世界模型预测各候选的未来结果，再根据任务语义与未来 latent 的一致性选择最佳动作。
 
-  <h2>Jointly Modeling Video Dynamics and Actions for Generalizable Robot Control</h2>
+当前版本只包含 Stage 1。RL selector 和 RL policy improvement 不在本阶段范围内。
 
-</div>
+## 方法概览
 
-<div align="center">
-
-[![arXiv](https://img.shields.io/badge/arXiv-2603.10448-FF5500.svg)](https://arxiv.org/abs/2603.10448)
-[![Project Page](https://img.shields.io/badge/Project-Page-FF8C00.svg)](https://dit4dit.github.io/)
-[![License](https://img.shields.io/badge/License-MIT-FF8C00.svg)](LICENSE)
-
-</div>
-
-<div align="center">
-
-[Teli Ma](https://teleema.github.io/)<sup>1,2</sup> &nbsp;&nbsp;
-[Jia Zheng](https://jiaazheng.github.io/)<sup>1,2</sup> &nbsp;&nbsp;
-[Zifan Wang](https://scholar.google.com/citations?user=GaJXZ-UAAAAJ&hl=en)<sup>1,2</sup> &nbsp;&nbsp;
-[Chunli Jiang](https://scholar.google.com/citations?user=nvzF-RMAAAAJ&hl=en)<sup>1</sup> &nbsp;&nbsp;
-Andy Cui<sup>1</sup> &nbsp;&nbsp;
-[Junwei Liang](https://junweiliang.me/index.html)<sup>2,3,\*</sup> &nbsp;&nbsp;
-[Shuo Yang](https://shuoyangrobotics.github.io/)<sup>1,\*</sup>
-
-<sup>1</sup>Mondo Robotics &nbsp;&nbsp; <sup>2</sup>HKUST(GZ) &nbsp;&nbsp; <sup>3</sup>HKUST &nbsp;&nbsp; <sup>\*</sup>Corresponding author
-
-</div>
-
----
-
-DiT4DiT is a <b><span style="color: #FF8C00;">Vision-Action-Model (VAM)</span></b> framework that combines video generation transformers with flow-matching-based action prediction for generalizable robotic manipulation. It supports both the tabletop and whole-body control for manipulation tasks. Notably, DiT4DiT stands as the <b>first</b> efficient VAM to achieve real-time whole-body control of humanoid robots.
-
-
-
-## News
-
-- **[2026-06-09]** We release real G1 teleoperation, training, and deployment code [here](examples/Real_G1/README.md).
-- **[2026-04-15]** Initial release of DiT4DiT with training, evaluation, and deployment code.
-- **[2026-03-11]** We release the [arXiv paper](https://arxiv.org/abs/2603.10448).
-
-
-### Whole-Body Control (all 1x speed & autonomous)
-
-<div align="center">
-<table>
-<tr>
-<td align="center" colspan="2"><b>Shelf Organization</b></td>
-</tr>
-<tr>
-<td align="center" colspan="2"><img src="media/shelf_organization.webp" width="800"></td>
-</tr>
-<tr>
-<td align="center" colspan="2"><b>Relocate Chair</b></td>
-</tr>
-<tr>
-<td align="center" colspan="2"><img src="media/relocate_chair.webp" width="800"></td>
-</tr>
-<tr>
-<td align="center" colspan="2"><b>Assembly Line Work</b></td>
-</tr>
-<tr>
-<td align="center" colspan="2"><img src="media/assembly_line.webp" width="800"></td>
-</tr>
-</table>
-</div>
-
-### Tabletop Manipulation (all 1x speed, 1 policy for all tasks)
-
-<div align="center">
-<table>
-<tr>
-<td align="center"><b>Stack Cups</b></td>
-<td align="center"><b>Drawer Interaction</b></td>
-</tr>
-<tr>
-<td align="center"><img src="media/cups.gif" width="400"></td>
-<td align="center"><img src="media/drawer.gif" width="400"></td>
-</tr>
-<tr>
-<td align="center"><b>Pick and Place</b></td>
-<td align="center"><b>Arrange Flower</b></td>
-</tr>
-<tr>
-<td align="center"><img src="media/eggplant.gif" width="400"></td>
-<td align="center"><img src="media/flower.gif" width="400"></td>
-</tr>
-<tr>
-<td align="center"><b>Move Spoon</b></td>
-<td align="center"><b>Insert Plate</b></td>
-</tr>
-<tr>
-<td align="center"><img src="media/spoon.gif" width="400"></td>
-<td align="center"><img src="media/plate.gif" width="400"></td>
-</tr>
-<tr>
-<td align="center"><b>Box Packing</b></td>
-<td align="center"><b>Twist Cap</b></td>
-</tr>
-<tr>
-<td align="center"><img src="media/packing.gif" width="400"></td>
-<td align="center"><img src="media/twist_cap.gif" width="400"></td>
-</tr>
-</table>
-</div>
-
-
-## Table of Contents
-
-- [News](#news)
-- [TODOs](#todos)
-- [Project Structure](#project-structure)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-  - [Simulation](#simulation)
-  - [Real Robot](#real-robot)
-- [Acknowledgements](#acknowledgements)
-- [License](#license)
-
-
-
-## TODOs
-
-- [x] ~~Release teleoperation, training and deployment code for Unitree G1 tabletop tasks.~~
-- [x] ~~Release teleoperation, training and deployment code for Unitree G1 whole-body control tasks.~~
-
-## Project Structure
-
+```mermaid
+flowchart TD
+    A[当前观测 + 任务指令] --> B[DiT4DiT 基础策略]
+    B --> C[K 条候选动作轨迹]
+    C --> D[动作条件 Cosmos 世界模型]
+    D --> E[候选未来 latent]
+    E --> F[任务语义对齐打分]
+    F --> G[选择最高分候选]
+    G --> H[执行动作]
 ```
+
+Stage 1 包含以下闭环：
+
+1. Flow-matching action head 以不同初始噪声并行采样 `K` 条动作轨迹。
+2. 每条动作轨迹经过可训练投影器，作为额外的 cross-attention token 输入 Cosmos-Predict2.5。
+3. 世界模型先生成一条仅由观测和任务指令条件化的 reference rollout，再完成各候选动作的未来 rollout。
+4. reference 与所有候选共享同一世界模型噪声；将候选未来 latent 与 reference future latent 做 cosine alignment。
+5. 对每个 batch 执行 `argmax`，只返回被选中的动作，同时保留候选、分数和索引用于分析。
+
+训练时使用数据集中的真实动作作为世界模型条件，并联合优化动作 flow-matching loss 与未来视频 flow-matching loss。推理时默认通过 `predict_action_stage1()` 执行完整候选规划。
+
+## 仓库结构
+
+```text
 DiT4DiT/
-├── DiT4DiT/                    # Core package
-│   ├── config/                 # Configurations
-│   │   ├── deepseeds/          # DeepSpeed configs
-│   │   ├── robocasa/           # RoboCasa experiment configs
-│   │   └── real_robot/         # Real robot configs
-│   ├── dataloader/             # Dataset loading (LeRobot)
-│   ├── model/                  # Model architecture
-│   │   ├── framework/          # DiT4DiT framework
-│   │   └── modules/            # Backbone & action model
-│   └── training/               # Training scripts & utilities
-├── deployment/                 # WebSocket-based model server
-├── docs/                       # Documentation
+├── DiT4DiT/
+│   ├── config/
+│   │   ├── libero/                  # LIBERO Stage 1 配置
+│   │   ├── robocasa/                # RoboCasa-GR1 Stage 1 配置
+│   │   └── deepseeds/               # Accelerate / DeepSpeed 配置
+│   ├── dataloader/                  # LeRobot 数据加载
+│   ├── model/
+│   │   ├── framework/
+│   │   │   ├── DiT4DiT.py           # 训练、基础推理及 Stage 1 主流程
+│   │   │   └── stage1.py            # latent 打分和候选选择
+│   │   └── modules/
+│   │       ├── action_model/         # K 候选动作生成
+│   │       └── vlm/Cosmos25.py       # 动作条件未来预测
+│   └── training/                     # 训练入口
+├── deployment/model_server/         # WebSocket 推理服务
 ├── examples/
-│   ├── Robocasa_tabletop/      # RoboCasa simulation example
-│   │   ├── train_files/        # Training scripts
-│   │   └── eval_files/         # Evaluation & simulation
-│   └── Real_G1/                # Real Unitree G1 example
-│       ├── train_files/        # Training scripts
-│       └── eval_files/         # Evaluation
-└── requirements.txt
+│   ├── LIBERO/
+│   └── Robocasa_tabletop/
+├── docs/                             # benchmark 详细说明
+└── tests/                            # Stage 1 单元测试
 ```
 
-## Installation
+仓库已移除与本阶段无关的 Unitree G1 全身控制栈、第三方 SDK、机器人模型、二进制策略及演示媒体。
 
-### Prerequisites
+## 环境安装
 
-- Python >= 3.10
+### 要求
+
+- Python 3.10+
 - CUDA 12.4+
-- \>8x GPUs recommended for training
+- 支持 bfloat16 的 NVIDIA GPU
+- 训练建议使用多张大显存 GPU；Stage 1 会运行一条 reference 和 `K` 条候选 rollout，推理显存近似随 `K` 线性增长
 
-### Setup
+安装 PyTorch 和项目依赖：
 
 ```bash
-# Clone the repository
-git clone https://github.com/Mondo-Robotics/DiT4DiT.git
-cd DiT4DiT
+conda create -n dit4dit-stage1 python=3.10 -y
+conda activate dit4dit-stage1
 
-# Create conda environment
-conda create -n dit4dit python=3.10 -y
-conda activate dit4dit
-
-# Install PyTorch (CUDA 12.8 recommended)
-pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128
-
-# Install dependencies
+pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 \
+  --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
-
-# Install the package
 pip install -e .
 ```
 
-### Download Pretrained Backbone
-
-Download the Cosmos-Predict2.5-2B model from Hugging Face:
+下载 Cosmos-Predict2.5-2B：
 
 ```bash
-huggingface-cli download nvidia/Cosmos-Predict2.5-2B --revision diffusers/base/post-trained --local-dir /path/to/Cosmos-Predict2.5-2B
+huggingface-cli download nvidia/Cosmos-Predict2.5-2B \
+  --revision diffusers/base/post-trained \
+  --local-dir /path/to/Cosmos-Predict2.5-2B
 ```
 
-## Model Zoo
+## 配置 Stage 1
 
-We release pretrained checkpoints to facilitate reproduction.
+LIBERO 和 RoboCasa 配置已默认开启 Stage 1：
 
-### Available Checkpoints
+```yaml
+framework:
+  stage1:
+    enabled: true
+    num_candidates: 4
+    valid_action_dim: 7  # LIBERO；RoboCasa 为 29
+    world_model_seed: 42
+    prompt_embedding_dim: null
+```
 
-| Model | Description | Dataset | Success Rate | Link |
-| --- | --- | --- | --- | --- |
-| **DiT4DiT-LIBERO** | DiT4DiT for LIBERO benchmark | LIBERO | 98.6 | [🤗 Hugging Face](https://huggingface.co/mondo-robotics/dit4dit-model/tree/main/dit4dit_libero) |
-| **DiT4DiT-RoboCasa-GR1** | DiT4DiT for RoboCasa-GR1 tabletop tasks | RoboCasa-GR1 | 56.7 | [🤗 Hugging Face](https://huggingface.co/mondo-robotics/dit4dit-model/tree/main/dit4dit_robocasa_gr1) |
+参数含义：
 
-> **Note:** More checkpoints will be released soon. Stay tuned!
+| 参数 | 说明 |
+| --- | --- |
+| `framework.stage1.enabled` | 开启动作条件训练和 Stage 1 默认推理 |
+| `framework.stage1.num_candidates` | 每次推理采样的候选数 `K` |
+| `framework.stage1.valid_action_dim` | 去除 padding 后的真实动作维度；候选的其余维度在进入世界模型前清零 |
+| `framework.stage1.world_model_seed` | 世界模型候选比较使用的共享噪声种子 |
+| `framework.stage1.prompt_embedding_dim` | 动作 token 宽度；`null` 时从 Cosmos text encoder 自动推断 |
+| `framework.cosmos25.future_num_inference_steps` | 每个候选的世界模型 rollout 步数 |
+| `framework.cosmos25.future_loss_type` | 未来预测损失，默认 `flow_matching` |
+| `trainer.loss_scale.future_video` | 联合训练时未来视频损失权重；未设置时为 `1.0` |
 
-## Quick Start
+首次运行前至少修改配置或启动脚本中的：
 
-### Simulation
+- `framework.cosmos25.base_model`
+- `datasets.vla_data.data_root_dir`
+- `WANDB_API_KEY`、`wandb_entity`
+- `accelerate launch --num_processes`
 
-- **LIBERO**: See the full training and evaluation guide [here](docs/libero.md).
-- **RoboCasa-GR1 Tabletop**: See the full training and evaluation guide [here](docs/robocasa_tabletop.md).
+旧版 DiT4DiT checkpoint 没有动作条件投影器，只能运行基础策略。要验证 Stage 1，需要使用当前配置重新训练生成 checkpoint。
 
-### Real Robot
+Stage 1 当前要求 `future_loss_type` 使用 latent flow-matching 系列；其他未来损失会在模型初始化时给出明确错误，以避免真实动作泄漏到基础策略特征。
 
-- **Unitree G1 (Decoupled WholeBodyControl)**: For real-robot data collection, replay, and closed-loop deployment on a Unitree G1, see the full guide [here](examples/Real_G1/README.md).
+## 数据准备
 
-## Results
+### LIBERO
 
-### LIBERO Benchmark
+下载 LeRobot 格式的 LIBERO Spatial、Object、Goal 和 LIBERO-10 数据，并将其共同放在配置的 `data_root_dir` 下。原 benchmark 的环境与数据说明见 [docs/libero.md](docs/libero.md)。
 
-| Task Suite | Success Rate |
-|------------|-------------|
-| LIBERO-Spatial | 98.6 |
-| LIBERO-Object | 100.0 |
-| LIBERO-Goal | 99.2 |
-| LIBERO-10 | 96.6 |
-| **Average** | **98.6** |
+### RoboCasa-GR1
 
-### Robocasa-GR1 Benchmark
+```bash
+python examples/Robocasa_tabletop/train_files/download_gr00t_ft_data.py
+```
 
-The following results are obtained using the default training parameters described in [Configure Training](#configure-training). We report five independent evaluation runs of the same checkpoint to demonstrate reproducibility. The model consistently achieves an average success rate above 56% across all runs.
+随后将 `DiT4DiT/config/robocasa/dit4dit_robocasa_gr1.yaml` 中的数据路径改为实际下载位置。原 benchmark 的环境与数据说明见 [docs/robocasa_tabletop.md](docs/robocasa_tabletop.md)。
 
-| Task | Run 1 | Run 2 | Run 3 | Run 4 | Run 5 |
-|------|-------|-------|-------|-------|-------|
-| BottleToCabinetClose | 50.0 | 72.0 | 68.0 | 64.0 | 70.0 |
-| CanToDrawerClose | 80.0 | 80.0 | 82.0 | 76.0 | 70.0 |
-| CupToDrawerClose | 50.0 | 34.0 | 50.0 | 44.0 | 60.0 |
-| MilkToMicrowaveClose | 58.0 | 60.0 | 38.0 | 68.0 | 60.0 |
-| PotatoToMicrowaveClose | 40.0 | 40.0 | 36.0 | 38.0 | 48.0 |
-| WineToCabinetClose | 60.0 | 48.0 | 60.0 | 54.0 | 68.0 |
-| FromCuttingboardToBasket | 54.0 | 48.0 | 46.0 | 64.0 | 54.0 |
-| FromCuttingboardToCardboardbox | 50.0 | 60.0 | 48.0 | 58.0 | 52.0 |
-| FromCuttingboardToPan | 80.0 | 74.0 | 78.0 | 72.0 | 72.0 |
-| FromCuttingboardToPot | 52.0 | 46.0 | 66.0 | 64.0 | 54.0 |
-| FromCuttingboardToTieredbasket | 44.0 | 54.0 | 50.0 | 50.0 | 46.0 |
-| FromPlacematToBasket | 58.0 | 40.0 | 44.0 | 54.0 | 54.0 |
-| FromPlacematToBowl | 64.0 | 66.0 | 72.0 | 60.0 | 56.0 |
-| FromPlacematToPlate | 66.0 | 62.0 | 64.0 | 54.0 | 58.0 |
-| FromPlacematToTieredshelf | 44.0 | 48.0 | 40.0 | 32.0 | 44.0 |
-| FromPlateToBowl | 64.0 | 74.0 | 54.0 | 72.0 | 52.0 |
-| FromPlateToCardboardbox | 50.0 | 54.0 | 52.0 | 56.0 | 52.0 |
-| FromPlateToPan | 58.0 | 68.0 | 70.0 | 68.0 | 56.0 |
-| FromPlateToPlate | 62.0 | 64.0 | 72.0 | 76.0 | 74.0 |
-| FromTrayToCardboardbox | 52.0 | 50.0 | 60.0 | 58.0 | 58.0 |
-| FromTrayToPlate | 64.0 | 64.0 | 58.0 | 60.0 | 50.0 |
-| FromTrayToPot | 68.0 | 70.0 | 66.0 | 64.0 | 74.0 |
-| FromTrayToTieredbasket | 50.0 | 46.0 | 50.0 | 42.0 | 50.0 |
-| FromTrayToTieredshelf | 42.0 | 36.0 | 28.0 | 30.0 | 44.0 |
-| **Average** | **56.7** | **56.6** | **56.3** | **57.4** | **57.3** |
+数据样本必须提供：
 
-### LIBERO Benchmark
+- `image`：当前帧及未来监督帧；
+- `lang`：任务指令；
+- `action` 和 `action_mask`：动作轨迹及有效维度；
+- `state`：配置启用 state conditioning 时的机器人状态。
 
+## 训练
+
+LIBERO：
+
+```bash
+bash examples/LIBERO/train_files/run_libero.sh
+```
+
+RoboCasa-GR1：
+
+```bash
+bash examples/Robocasa_tabletop/train_files/run_robocasa.sh
+```
+
+两个脚本都调用：
+
+```bash
+accelerate launch \
+  --config_file DiT4DiT/config/deepseeds/deepspeed_zero2.yaml \
+  DiT4DiT/training/train.py \
+  --config_yaml /path/to/stage1-config.yaml
+```
+
+训练模式建议保持为：
+
+```yaml
+framework:
+  cosmos25:
+    training: joint
+```
+
+`joint` 模式同时计算 `action_loss` 和 `future_video_loss`。训练日志应能看到：
+
+- `action_dit_loss`
+- `future_video_loss`
+- `future_video_loss_scaled`
+- `total_loss`
+
+可加载的 checkpoint 需要与运行配置、归一化统计保持以下目录关系：
+
+```text
+<run_dir>/
+├── config.yaml
+├── dataset_statistics.json
+├── checkpoints/
+│   └── steps_40000_pytorch_model.pt
+└── final_model/
+    └── pytorch_model.pt
+```
+
+因此不要单独移动 `.pt` 文件。`from_pretrained()` 会从 checkpoint 的上两级目录读取 `config.yaml` 和 `dataset_statistics.json`。训练入口会在启动时保存完整配置，并在构建数据集时保存统计文件，因此周期性 checkpoint 和 `final_model/pytorch_model.pt` 均可沿用同一 `<run_dir>` 下的配套文件。
+
+## Stage 1 推理
+
+### Python 接口
+
+```python
+import numpy as np
+import torch
+from PIL import Image
+
+from DiT4DiT.model.framework.base_framework import baseframework
+
+checkpoint = "/path/to/run/checkpoints/steps_40000_pytorch_model.pt"
+model = baseframework.from_pretrained(checkpoint)
+model = model.to(device="cuda", dtype=torch.bfloat16).eval()
+
+# LIBERO 示例；必须使用与各 benchmark 训练时完全相同的 state transform。
+state = np.asarray(raw_state, dtype=np.float32).reshape(1, -1)
+state = np.stack([np.sin(state), np.cos(state)], axis=-1).reshape(1, -1)
+assert state.shape[-1] <= 16
+state_array = np.pad(state, ((0, 0), (0, 16 - state.shape[-1])))
+
+result = model.predict_action(
+    examples=[
+        {
+            "image": [Image.open("observation.png").convert("RGB")],
+            "lang": "put the red mug into the drawer",
+            "state": state_array,
+        }
+    ],
+    num_candidates=4,
+)
+
+action = result["normalized_actions"]       # (B, T, D)，已选中的动作
+scores = result["candidate_scores"]         # (B, K)
+indices = result["selected_indices"]        # (B,)
+candidates = result["candidate_actions"]    # (B, K, T, D)
+```
+
+当 checkpoint 的 `framework.stage1.enabled=true` 时，`predict_action()` 默认路由到 Stage 1。调试基础策略可显式传入 `disable_stage1=True`。
+
+也可以直接调用：
+
+```python
+result = model.predict_action_stage1(examples, num_candidates=4)
+```
+
+### 推理服务
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python deployment/model_server/server_policy.py \
+  --ckpt_path /path/to/run/checkpoints/steps_40000_pytorch_model.pt \
+  --port 6398 \
+  --use_bf16
+```
+
+客户端继续读取 `normalized_actions` 即可；响应中还包含 `candidate_actions`、`candidate_scores` 和 `selected_indices`。
+
+## Benchmark 评估
+
+LIBERO：
+
+```bash
+bash examples/LIBERO/eval_files/batch_eval_libero.sh \
+  /path/to/run/checkpoints/steps_40000_pytorch_model.pt 0
+```
+
+RoboCasa-GR1：
+
+```bash
+bash examples/Robocasa_tabletop/eval_files/batch_eval_args.sh \
+  /path/to/run/checkpoints/steps_50000_pytorch_model.pt 1 720 12 "0,1,2,3"
+```
+
+运行前需要按脚本注释配置模型环境与模拟器环境的 Python 路径。
+
+建议至少报告以下 Stage 1 对照实验：
+
+- `K=1`：没有候选间比较，但仍运行一次动作条件世界模型；
+- `K=2/4/8`：候选规模与成功率、延迟、显存的关系；
+- 基础策略：`disable_stage1=True`；
+- 随机候选选择（建议消融，当前没有内置开关）；
+- latent alignment 选择。
+
+现有 benchmark CLI 不直接暴露 `num_candidates` 与 `disable_stage1`。修改 `K` 时可编辑 checkpoint 所属 `<run_dir>/config.yaml`，或在客户端请求的 `vla_input` 中加入对应字段；基础策略对照使用 `disable_stage1: true`。
+
+## 测试
+
+```bash
+pytest -q tests/test_stage1.py
+```
+
+测试覆盖 batch/candidate 排列、latent alignment、`argmax` 选择和输入 shape 校验。完整 Cosmos 前向仍需要模型权重与 CUDA 环境。
+
+## 当前边界
+
+- 当前 selector 是零样本 latent alignment，不包含 RL。
+- 世界模型只从离线数据中的真实动作学习，候选动作分布外泛化能力取决于数据覆盖范围。
+- `K` 个候选目前作为一个展平 batch 运行；显存不足时应降低 `num_candidates`。
+- Stage 1 的目标是验证 FOREWARN 式候选预测与选择能否迁移到 DiT4DiT，而不是优化基础策略本身。
 
 ## Citation
 
-If you find this work useful, please consider citing:
+本项目基于 DiT4DiT。使用相关代码时请引用原工作：
 
 ```bibtex
 @article{ma2026dit4dit,
@@ -274,16 +310,4 @@ If you find this work useful, please consider citing:
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgements
-
-This project builds upon:
-- [StarVLA](https://github.com/starVLA/starVLA)
-- [Cosmos-Predict2.5](https://github.com/NVIDIA/Cosmos) by NVIDIA
-- [GR00T](https://github.com/NVIDIA/Isaac-GR00T) by NVIDIA
-- [Robocasa](https://github.com/robocasa/robocasa)
-- [LeRobot](https://github.com/huggingface/lerobot) by Hugging Face
-- [GR00T-WholeBodyControl](https://github.com/NVlabs/GR00T-WholeBodyControl) by NVIDIA
-
-
+本项目使用 [MIT License](LICENSE)。DiT4DiT 原始实现与 Cosmos-Predict2.5 等依赖分别遵循各自许可证。

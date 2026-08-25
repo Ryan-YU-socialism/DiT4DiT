@@ -8,6 +8,12 @@ is_debug: false
 
 framework:
   name: DiT4DiT
+  stage1:
+    enabled: true
+    num_candidates: 4
+    valid_action_dim: 29
+    world_model_seed: 42
+    prompt_embedding_dim: null  # null: infer from the Cosmos text encoder
   cosmos25:
     future_num_inference_steps: 1
     future_loss_type: flow_matching

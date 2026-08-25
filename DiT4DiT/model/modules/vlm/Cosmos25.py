@@ -113,6 +113,23 @@ class Cosmos25FeatureExtractor(nn.Module):
         self._capture_hidden_enabled: bool = True
         self._register_hook()
 
+        stage1_cfg = getattr(getattr(config, "framework", None), "stage1", None)
+        self.action_condition_projector = None
+        if bool(getattr(stage1_cfg, "enabled", False)):
+            configured_width = getattr(stage1_cfg, "prompt_embedding_dim", None)
+            text_cfg = getattr(self.text_encoder, "config", None)
+            inferred_width = None
+            for name in ("d_model", "hidden_size", "projection_dim"):
+                value = getattr(text_cfg, name, None)
+                if isinstance(value, int) and value > 0:
+                    inferred_width = value
+                    break
+            prompt_width = int(configured_width or inferred_width or 2048)
+            action_cfg = config.framework.action_model
+            action_horizon = int(action_cfg.future_action_window_size) + 1
+            action_condition_dim = action_horizon * int(action_cfg.action_dim)
+            self.action_condition_projector = nn.Linear(action_condition_dim, prompt_width)
+
         if _exists(device):
             self.to(device)
 
@@ -259,6 +276,7 @@ class Cosmos25FeatureExtractor(nn.Module):
         device: torch.device,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         latents: Optional[torch.Tensor] = None,
+        deterministic_conditioning: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         from diffusers.utils.torch_utils import randn_tensor
 
@@ -317,15 +335,15 @@ class Cosmos25FeatureExtractor(nn.Module):
             video_bcthw_padded = video_bcthw
 
         # Encode the padded video
-        if isinstance(generator, list):
-            cond_latents_list = [
-                self.vae.encode(video_bcthw_padded[i].unsqueeze(0)).latent_dist.sample(generator=generator[i])
-                for i in range(batch_size)
-            ]
-        else:
-            cond_latents_list = [
-                self.vae.encode(vid.unsqueeze(0)).latent_dist.sample(generator=generator) for vid in video_bcthw_padded
-            ]
+        cond_latents_list = []
+        for index, video_item in enumerate(video_bcthw_padded):
+            posterior = self.vae.encode(video_item.unsqueeze(0)).latent_dist
+            if deterministic_conditioning:
+                cond_latent = posterior.mode()
+            else:
+                item_generator = generator[index] if isinstance(generator, list) else generator
+                cond_latent = posterior.sample(generator=item_generator)
+            cond_latents_list.append(cond_latent)
 
         cond_latents = torch.cat(cond_latents_list, dim=0).to(dtype)
 
@@ -505,6 +523,10 @@ class Cosmos25FeatureExtractor(nn.Module):
         gt_future_videos: Optional[torch.Tensor] = None,  # (B,Tf,3,H,W) float in [0,1]
         return_pred_future_video: bool = False,
         fixed_seed: Optional[int] = None,
+        action_condition: Optional[torch.Tensor] = None,
+        generate_future: bool = False,
+        capture_final_hidden: bool = False,
+        deterministic_conditioning: bool = False,
     ) -> torch.Tensor:
         if height % 16 != 0 or width % 16 != 0:
             raise ValueError(f"`height` and `width` must be divisible by 16 but are {height} and {width}.")
@@ -534,6 +556,33 @@ class Cosmos25FeatureExtractor(nn.Module):
                 device=device,
                 max_sequence_length=self.max_sequence_length,
             )
+            world_prompt_embeds = prompt_embeds
+            if action_condition is not None:
+                if self.action_condition_projector is None:
+                    raise RuntimeError("Action conditioning requires framework.stage1.enabled=true")
+                if action_condition.shape[0] != b:
+                    raise ValueError("action_condition batch must match videos")
+                projector_dtype = self.action_condition_projector.weight.dtype
+                action_flat = action_condition.to(device=device, dtype=projector_dtype).flatten(1)
+                if action_flat.shape[-1] != self.action_condition_projector.in_features:
+                    raise ValueError(
+                        f"Flattened action condition has width {action_flat.shape[-1]}, expected "
+                        f"{self.action_condition_projector.in_features}. Check action_dim and action horizon."
+                    )
+                action_token = self.action_condition_projector(action_flat).to(prompt_embeds.dtype).unsqueeze(1)
+                if action_token.shape[-1] != prompt_embeds.shape[-1]:
+                    raise ValueError(
+                        "Action projector width does not match Cosmos prompt embedding width; "
+                        "set framework.stage1.prompt_embedding_dim to the text embedding width."
+                    )
+                world_prompt_embeds = torch.cat([prompt_embeds, action_token], dim=1)
+
+            # During joint training the hidden returned to the action policy must
+            # not see the ground-truth action.  The separate FM supervision call
+            # below uses world_prompt_embeds and therefore still trains the
+            # action-conditioned world model.  Candidate rollout at inference
+            # (generate_future=True) does use the candidate-conditioned prompt.
+            denoise_prompt_embeds = world_prompt_embeds if generate_future else prompt_embeds
 
             videos_bcthw = self._coerce_videos_to_bcthw(videos, height=height, width=width)
             videos_bcthw = videos_bcthw.to(device=device, dtype=self.vae.dtype) ##[-1,1]
@@ -570,6 +619,7 @@ class Cosmos25FeatureExtractor(nn.Module):
                 device=device,
                 generator=generator,
                 latents=None,
+                deterministic_conditioning=deterministic_conditioning,
             )
 
             cond_timestep = torch.ones_like(cond_indicator) * float(conditional_frame_timestep)
@@ -603,7 +653,13 @@ class Cosmos25FeatureExtractor(nn.Module):
             # - Use UniPCMultistepScheduler with `prediction_type="flow_prediction"` + `use_flow_sigmas=True`
             # - Treat transformer output as velocity (a.k.a. flow) and replace conditioned frames with gt_velocity
             # For pure flow-matching training, we don't need to run the sampling loop or decode videos.
-            need_generate = ((gt_future_videos is not None) or bool(return_pred_future_video)) and (not train_flow_matching_only)
+            need_generate = (
+                bool(generate_future)
+                or (
+                    ((gt_future_videos is not None) or bool(return_pred_future_video))
+                    and (not train_flow_matching_only)
+                )
+            )
 
             # If we aren't generating, only run enough steps to reach capture_step_index (usually 0).
             steps_for_hidden = int(num_inference_steps) if need_generate else max(1, int(capture_step_index) + 1)
@@ -640,7 +696,7 @@ class Cosmos25FeatureExtractor(nn.Module):
                     hidden_states=in_latents,
                     condition_mask=cond_mask_t,
                     timestep=in_timestep,
-                    encoder_hidden_states=prompt_embeds,
+                    encoder_hidden_states=denoise_prompt_embeds,
                     padding_mask=padding_mask,
                     return_dict=False,
                 )[0]
@@ -653,7 +709,7 @@ class Cosmos25FeatureExtractor(nn.Module):
                 # Capture hidden from the FIRST transformer call and freeze capture afterwards.
                 if i == 0 and hidden_first is None and len(self._cached_hidden) > 0:
                     hidden_first = self._cached_hidden[-1]
-                    self._capture_hidden_enabled = False
+                    self._capture_hidden_enabled = bool(capture_final_hidden)
 
                 # Only advance diffusion if we actually need generated video / future loss.
                 if need_generate:
@@ -668,7 +724,10 @@ class Cosmos25FeatureExtractor(nn.Module):
                     "or `extract_layer` is not a valid block index."
                 )
 
-            hidden = hidden_first if hidden_first is not None else self._cached_hidden[-1]
+            if capture_final_hidden:
+                hidden = self._cached_hidden[-1]
+            else:
+                hidden = hidden_first if hidden_first is not None else self._cached_hidden[-1]
 
             # Optional future-video prediction + auxiliary supervision loss
             future_loss = None
@@ -790,7 +849,7 @@ class Cosmos25FeatureExtractor(nn.Module):
                                 hidden_states=in_latents_fm,
                                 condition_mask=cond_mask_t,
                                 timestep=in_timestep_fm,
-                                encoder_hidden_states=prompt_embeds,
+                                encoder_hidden_states=world_prompt_embeds,
                                 padding_mask=padding_mask,
                                 return_dict=False,
                             )[0]
@@ -843,7 +902,7 @@ class Cosmos25FeatureExtractor(nn.Module):
                 if pred_video is not None:
                     pred_video = pred_video.detach()
 
-            if gt_future_videos is not None or return_pred_future_video:
+            if gt_future_videos is not None or return_pred_future_video or generate_future:
                 return hidden, pred_video, future_loss  # type: ignore[return-value]
 
             return hidden
@@ -1027,16 +1086,18 @@ class _Cosmos25_Interface(nn.Module):
         return_dict: bool = True,
         future_videos: Optional[torch.Tensor] = None,
         predict_future: bool = False,
+        action_condition: Optional[torch.Tensor] = None,
         **kwargs,
     ):
         _ = kwargs
 
         future_loss = None
         pred_future_video = None
-        fixed_seed = 42
         # future_videos = None
 
         cosmos_cfg = getattr(self.config.framework, "cosmos25", None) if self.config is not None else None
+        stage1_cfg = getattr(self.config.framework, "stage1", None) if self.config is not None else None
+        world_model_seed = int(getattr(stage1_cfg, "world_model_seed", 42))
         conditional_frame_timestep = float(getattr(cosmos_cfg, "conditional_frame_timestep", 0.001)) if cosmos_cfg is not None else 0.001
 
         # Compute training-time num_frames_out from config so that eval latent
@@ -1065,6 +1126,11 @@ class _Cosmos25_Interface(nn.Module):
                 num_inference_steps=future_steps,
                 num_frames_out=train_num_frames_out,
                 conditional_frame_timestep=conditional_frame_timestep,
+                action_condition=action_condition,
+                generate_future=bool(predict_future),
+                capture_final_hidden=bool(predict_future),
+                fixed_seed=world_model_seed if predict_future else None,
+                deterministic_conditioning=bool(predict_future),
             )
         else:
             hidden = self.extractor(
@@ -1075,6 +1141,7 @@ class _Cosmos25_Interface(nn.Module):
                 detach=True,
                 num_frames_out=train_num_frames_out,
                 conditional_frame_timestep=conditional_frame_timestep,
+                action_condition=action_condition,
             )
 
         bsd = self._hidden_to_bsd(hidden)
@@ -1083,5 +1150,3 @@ class _Cosmos25_Interface(nn.Module):
         out = BackboneOutput(hidden_states=[bsd], future_video_loss=future_loss, pred_future_video=pred_future_video)
         # return out if return_dict else (out.hidden_states,)
         return out
-
-

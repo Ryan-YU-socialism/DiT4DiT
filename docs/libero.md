@@ -59,9 +59,12 @@ You can download our pretrained DiT4DiT-LIBERO checkpoint from Hugging Face to d
 huggingface-cli download mondo-robotics/dit4dit-model --include "dit4dit_libero/*" --local-dir /path/to/dit4dit-model
 ```
 
-See the [Model Zoo](../README.md#model-zoo) for all available checkpoints.
+> **Stage 1 note:** the published checkpoint predates the action-conditioned
+> planner. It can reproduce the base-policy evaluation, but Stage 1 requires a
+> checkpoint retrained with `framework.stage1.enabled=true`.
 
-> **Note:** After downloading, remember to update **line 46** of `config.yaml` in the checkpoint directory to point to your local Cosmos-Predict2.5-2B path.
+> **Note:** After downloading, update `framework.cosmos25.base_model` in the
+> checkpoint run directory's `config.yaml` to your local Cosmos-Predict2.5-2B path.
 
 
 ### Evaluation
@@ -70,8 +73,8 @@ Run all 4 LIBERO task suites sequentially on a single GPU:
 
 ```bash
 bash examples/LIBERO/eval_files/batch_eval_libero.sh \
-  /path/to/checkpoint.pt \   # Checkpoint path
-  0                           # GPU ID
+  /path/to/run/checkpoints/steps_40000_pytorch_model.pt \
+  0
 ```
 
 > **Note:** Please ensure that `MODEL_PYTHON` and `LIBERO_PYTHON` in `batch_eval_libero.sh` point to the correct Python executables in your DiT4DiT and LIBERO conda environments respectively.

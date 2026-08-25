@@ -68,12 +68,9 @@ def setup_directories(cfg) -> Path:
         # create output directory and checkpoint directory
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(output_dir / "checkpoints", exist_ok=True)
-
-        # # save config
-        # OmegaConf.save(cfg, output_dir / "config.yaml")
-        # with open(output_dir / "config.yaml", "r") as f_yaml, open(output_dir / "config.json", "w") as f_json:
-        #     yaml_cfg = yaml.safe_load(f_yaml)
-        #     json.dump(yaml_cfg, f_json, indent=2)
+        raw_cfg = cfg._cfg if isinstance(cfg, AccessTrackedConfig) else cfg
+        OmegaConf.save(config=raw_cfg, f=output_dir / "config.yaml")
+        logger.info(f"Saved complete run configuration to {output_dir / 'config.yaml'}")
 
     return output_dir
 
