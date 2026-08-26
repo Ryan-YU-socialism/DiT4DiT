@@ -21,6 +21,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from DiT4DiT.model.framework.stage1 import resolve_world_model_generator
+
+
 def _exists(v) -> bool:
     return v is not None
 
@@ -543,9 +547,7 @@ class Cosmos25FeatureExtractor(nn.Module):
                 raise ValueError(f"len(prompts)={len(prompts_list)} must match batch size B={b}")
 
         # Create fixed generator if seed is provided
-        if fixed_seed is not None and generator is None:
-            generator = torch.Generator(device=self.device)
-            generator.manual_seed(fixed_seed)
+        generator = resolve_world_model_generator(fixed_seed, generator, self.device)
 
         # ctx = torch.enable_grad() if self.trainable else torch.no_grad()
         with torch.enable_grad():

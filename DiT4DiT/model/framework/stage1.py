@@ -7,7 +7,7 @@ without changing the policy.
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -66,6 +66,28 @@ def select_candidates(candidate_actions: torch.Tensor, scores: torch.Tensor):
     indices = scores.argmax(dim=1)
     batch_indices = torch.arange(candidate_actions.shape[0], device=candidate_actions.device)
     return candidate_actions[batch_indices, indices], indices
+
+
+def resolve_world_model_generator(
+    fixed_seed: Optional[int],
+    generator: Optional[Union[torch.Generator, "list[torch.Generator]"]],
+    device: Union[str, torch.device],
+) -> Optional[Union[torch.Generator, "list[torch.Generator]"]]:
+    """Build the world-model noise generator used by both the reference and
+    every candidate rollout in Stage 1.
+
+    An explicit ``generator`` always wins. Otherwise, a fresh ``torch.Generator``
+    is seeded from ``fixed_seed``. Reference and candidate calls pass the same
+    ``fixed_seed`` and no explicit ``generator``, so each independently builds a
+    generator with identical state -- this is what makes their noise draws
+    match and Stage-1 scores reflect the action conditioning rather than
+    sampling variance. Kept as a standalone function so that invariant can be
+    unit-tested without constructing the Cosmos extractor.
+    """
+    if fixed_seed is not None and generator is None:
+        generator = torch.Generator(device=device)
+        generator.manual_seed(fixed_seed)
+    return generator
 
 
 def mask_action_dimensions(

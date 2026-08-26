@@ -4,6 +4,7 @@ from DiT4DiT.model.framework.stage1 import (
     latent_alignment_scores,
     mask_action_dimensions,
     repeat_batch,
+    resolve_world_model_generator,
     select_candidates,
 )
 
@@ -50,3 +51,32 @@ def test_mask_action_dimensions_rejects_wrong_width():
         assert "width D" in str(exc)
     else:
         raise AssertionError("expected action mask width validation failure")
+
+
+def test_resolve_world_model_generator_same_seed_gives_identical_noise():
+    # This is the property Stage 1 relies on: the reference future and every
+    # candidate future are drawn with the *same* fixed_seed and no explicit
+    # generator, so their noise draws must match bit-for-bit.
+    reference_generator = resolve_world_model_generator(42, None, "cpu")
+    candidate_generator = resolve_world_model_generator(42, None, "cpu")
+    assert reference_generator is not candidate_generator  # independently constructed
+    reference_noise = torch.randn(4, 4, generator=reference_generator)
+    candidate_noise = torch.randn(4, 4, generator=candidate_generator)
+    assert torch.equal(reference_noise, candidate_noise)
+
+
+def test_resolve_world_model_generator_different_seeds_diverge():
+    reference_generator = resolve_world_model_generator(42, None, "cpu")
+    candidate_generator = resolve_world_model_generator(43, None, "cpu")
+    reference_noise = torch.randn(4, 4, generator=reference_generator)
+    candidate_noise = torch.randn(4, 4, generator=candidate_generator)
+    assert not torch.equal(reference_noise, candidate_noise)
+
+
+def test_resolve_world_model_generator_no_seed_passes_through():
+    assert resolve_world_model_generator(None, None, "cpu") is None
+
+
+def test_resolve_world_model_generator_explicit_generator_wins():
+    explicit = torch.Generator(device="cpu").manual_seed(7)
+    assert resolve_world_model_generator(42, explicit, "cpu") is explicit
