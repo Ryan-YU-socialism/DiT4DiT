@@ -23,7 +23,10 @@ from DiT4DiT.model.framework.stage1 import (
     mask_action_dimensions,
     select_candidates,
 )
-from DiT4DiT.model.modules.action_model.ActionDiT import FlowmatchingActionHead, get_action_model
+from DiT4DiT.model.modules.action_model.ActionDiT import get_action_model
+from DiT4DiT.model.modules.action_model.discrete_action_head import (
+    decode_discrete_action_targets,
+)
 from DiT4DiT.model.modules.vlm import get_backbone_model
 from DiT4DiT.model.tools import FRAMEWORK_REGISTRY
 
@@ -38,8 +41,9 @@ class DiT4DiT(baseframework):
       - DiT flow-matching head for action sequence modeling
       - Optional action-conditioned future rollout and latent selector
 
-    Focus: predict and rank future continuous action plans conditioned on images
-    and task instructions.
+    Focus: predict and rank future action plans conditioned on images and task
+    instructions.  The action head can be either the legacy continuous
+    flow-matching model or an opt-in per-axis categorical model.
     """
 
     def __init__(
@@ -62,6 +66,15 @@ class DiT4DiT(baseframework):
         self.video_fm_only = (training_mode == "video")
         stage1_cfg = getattr(config.framework, "stage1", None) if config is not None else None
         self.stage1_enabled = bool(getattr(stage1_cfg, "enabled", False))
+        action_cfg = config.framework.action_model
+        action_head_type = str(
+            getattr(action_cfg, "action_head_type", "flow_matching")
+        ).lower()
+        self.discrete_actions = action_head_type in {
+            "discrete",
+            "categorical",
+            "discrete_action",
+        }
         future_loss_type = (
             str(getattr(config.framework.cosmos25, "future_loss_type", "")).lower()
             if config is not None
@@ -97,7 +110,11 @@ class DiT4DiT(baseframework):
                     "Cannot infer `vl_hidden_dim` for the selected backbone. "
                     "Please set `framework.cosmos25.vl_hidden_dim` in your config."
                 )
-            self.action_model: FlowmatchingActionHead = get_action_model(config=self.config)
+            self.action_model = get_action_model(config=self.config)
+            if self.discrete_actions != bool(
+                getattr(self.action_model, "is_discrete", False)
+            ):
+                raise RuntimeError("Configured action head type does not match the built model")
 
             self.future_action_window_size = config.framework.action_model.future_action_window_size
             self.past_action_window_size = config.framework.action_model.past_action_window_size
@@ -125,7 +142,22 @@ class DiT4DiT(baseframework):
         if actions is not None and self.stage1_enabled:
             action_condition = torch.as_tensor(np.asarray(actions), device=self.device)
             action_horizon = int(self.config.framework.action_model.future_action_window_size) + 1
-            action_condition = action_condition[:, -action_horizon:]
+            action_dim = int(self.config.framework.action_model.action_dim)
+            action_condition = action_condition[:, -action_horizon:, :action_dim]
+            if self.discrete_actions:
+                # The world model is conditioned on semantic axis commands, not
+                # categorical class ids or the [B,T,A,C] policy logits.
+                condition_mask = torch.as_tensor(
+                    np.stack([example["action_mask"] for example in examples]),
+                    device=action_condition.device,
+                )[:, -action_horizon:, :action_dim]
+                action_cfg = self.config.framework.action_model
+                action_condition = decode_discrete_action_targets(
+                    action_condition,
+                    action_class_values=action_cfg.action_class_values,
+                    action_target_format=action_cfg.action_target_format,
+                    valid_mask=condition_mask,
+                )
 
         # Step 1: backbone input format
         # All video frames (condition + future) are already in batch_images;
@@ -165,21 +197,31 @@ class DiT4DiT(baseframework):
             actions = torch.tensor(
                 np.array(actions), device=last_hidden.device, dtype=last_hidden.dtype
             )  # [B, T_full, action_dim]
-            actions_target = actions[:, -(self.future_action_window_size+1):, :]  # (B, chunk_len, action_dim)
+            action_horizon = self.future_action_window_size + 1
+            action_dim = int(self.config.framework.action_model.action_dim)
+            actions_target = actions[:, -action_horizon:, :action_dim]
+            action_mask = torch.from_numpy(np.stack(action_mask)).to(last_hidden.device)
+            action_mask = action_mask[:, -action_horizon:, :action_dim]
 
-            repeated_diffusion_steps = (
-                self.config.trainer.get("repeated_diffusion_steps", 4) if self.config and self.config.trainer else 4
+            # Repeating targets gives the flow head independent noise/time
+            # samples.  A categorical head is deterministic and should see each
+            # example exactly once.
+            repeated_diffusion_steps = 1 if self.discrete_actions else (
+                self.config.trainer.get("repeated_diffusion_steps", 4)
+                if self.config and self.config.trainer
+                else 4
             )
             actions_target_repeated = actions_target.repeat(repeated_diffusion_steps, 1, 1)
             last_hidden_repeated = last_hidden.repeat(repeated_diffusion_steps, 1, 1)
-            action_mask = torch.from_numpy(np.stack(action_mask)).to(last_hidden.device)
             action_mask = action_mask.repeat(repeated_diffusion_steps, 1, 1)
             ###no state
             state_repeated = None
             if state is not None:
+                state_dim = int(self.config.framework.action_model.state_dim)
                 state = torch.tensor(
                     np.array(state), device=last_hidden.device, dtype=last_hidden.dtype
                 )
+                state = state[..., :state_dim]
                 state_repeated = state.repeat(repeated_diffusion_steps, 1, 1)
 
             action_loss = self.action_model(
@@ -206,7 +248,9 @@ class DiT4DiT(baseframework):
           2. Otherwise encode the observation and sample one action trajectory
         Returns:
             dict:
-                normalized_actions (np.ndarray): Shape [B, T, action_dim], diffusion-sampled normalized actions.
+                normalized_actions (np.ndarray): Shape [B, T, action_dim].
+                    Discrete heads return decoded semantic values (for example
+                    ``-1/0/+1``), never class indices or logits.
         """
         if self.stage1_enabled and not kwargs.pop("disable_stage1", False):
             return self.predict_action_stage1(
@@ -243,7 +287,7 @@ class DiT4DiT(baseframework):
             torch.from_numpy(np.array(state)).to(
                 last_hidden.device,
                 dtype=last_hidden.dtype,
-            )
+            )[..., : int(self.config.framework.action_model.state_dim)]
             if state is not None
             else None
         )
@@ -300,7 +344,7 @@ class DiT4DiT(baseframework):
                 np.asarray(state),
                 device=policy_latents.device,
                 dtype=policy_latents.dtype,
-            )
+            )[..., : int(self.config.framework.action_model.state_dim)]
             if state is not None
             else None
         )

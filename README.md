@@ -122,6 +122,34 @@ framework:
 
 Stage 1 当前要求 `future_loss_type` 使用 latent flow-matching 系列；其他未来损失会在模型初始化时给出明确错误，以避免真实动作泄漏到基础策略特征。
 
+### EndoWAM 离散动作头
+
+EndoWAM 动作模式通过 `framework.action_model.action_head_type: discrete` 显式启用；未配置该字段时仍构建原有 flow-matching 动作头，因此已有 LIBERO、RoboCasa 配置和 checkpoint 不受影响。可将
+[`DiT4DiT/config/endowam/action_model_discrete.yaml`](DiT4DiT/config/endowam/action_model_discrete.yaml)
+和 [`DiT4DiT/config/endowam/discrete_dataset.yaml`](DiT4DiT/config/endowam/discrete_dataset.yaml)
+合并到完整训练配置。核心字段为：
+
+```yaml
+framework:
+  action_model:
+    action_head_type: discrete
+    action_dim: 3
+    state_dim: 3
+    future_action_window_size: 63
+    action_horizon: 64
+    num_action_classes: 3
+    action_class_values: [-1, 0, 1]
+    action_target_format: values
+```
+
+离散头为 64 个时间查询分别输出 3 个轴的三分类 logits，即 `[B, 64, 3, 3]`；训练 target 和 mask 均为 `[B, 64, 3]`。类别顺序随 checkpoint 保存，推理结果会解码回 `-1/0/+1`，不会把内部 class id 传给世界模型。
+
+Stage 1 世界模型把解码后的 `[B,64,3]` 动作按每个“时间×轴”编码成三类 one-hot，再投影为 Cosmos 条件 token；它不会把 `-1/0/+1` 当连续坐标。连续动作配置仍保留原 projector 形状。
+
+模型不会从连续 offset 猜测离散阈值。`action_target_format: values` 要求数据集已产出 `action_class_values` 中的值；若旧数据保存的是 class id，则必须按该 checkpoint 的真实 mapping 配置 `action_class_values` 并使用 `action_target_format: class_indices`。
+
+离散数据加载器固定采样 `action_delta_indices=[0,...,63]`，校验动作恰为 `[64,3]`，并把 episode 末尾越界位置标成无效 mask。对于未注册的 EndoMotion LeRobot 数据，可在最终配置中填写 `dataset_name` 及真实的 `modality_keys.video/state/action/language`；示例字段已写在 dataset fragment 中，代码不会猜测数据列名或运行连续归一化。
+
 ## 数据准备
 
 ### LIBERO

@@ -9,6 +9,68 @@ from pathlib import Path
 
 logger = get_logger(__name__)
 
+_DISCRETE_ACTION_HEAD_TYPES = {"discrete", "categorical", "discrete_action"}
+
+
+def _config_values_equal(existing, expected) -> bool:
+    if isinstance(expected, list):
+        try:
+            return list(existing) == expected
+        except TypeError:
+            return False
+    return existing == expected
+
+
+def synchronize_discrete_action_data_config(cfg, data_cfg) -> None:
+    """Derive discrete dataset semantics from the action-head configuration.
+
+    This keeps the data labels and checkpoint class order from silently
+    drifting apart. Explicit dataset values remain supported, but a conflict is
+    rejected instead of being overwritten.
+    """
+    action_cfg = cfg.framework.action_model
+    action_head_type = str(action_cfg.get("action_head_type", "flowmatching")).lower()
+    if action_head_type not in _DISCRETE_ACTION_HEAD_TYPES:
+        return
+
+    action_horizon = int(
+        action_cfg.get(
+            "action_horizon",
+            int(action_cfg.get("future_action_window_size", 63)) + 1,
+        )
+    )
+    action_dim = int(action_cfg.get("action_dim", 3))
+    class_values = action_cfg.get("action_class_values", None)
+    if class_values is None:
+        raise ValueError(
+            "A discrete action head requires explicit action_class_values."
+        )
+    class_values = list(class_values)
+    target_format = str(action_cfg.get("action_target_format", "values"))
+
+    derived = {
+        "discrete_actions": True,
+        "action_horizon": action_horizon,
+        "action_dim": action_dim,
+        "max_action_dim": action_dim,
+        "action_delta_indices": list(range(action_horizon)),
+        "action_class_values": class_values,
+        "action_target_format": target_format,
+    }
+    conflicts = []
+    for key, expected in derived.items():
+        existing = data_cfg.get(key, None)
+        if existing is not None and not _config_values_equal(existing, expected):
+            conflicts.append(f"{key}: dataset={existing!r}, action_model={expected!r}")
+    if conflicts:
+        raise ValueError(
+            "Discrete dataset configuration conflicts with framework.action_model: "
+            + "; ".join(conflicts)
+        )
+
+    for key, value in derived.items():
+        data_cfg[key] = value
+
 def save_dataset_statistics(dataset_statistics, run_dir):
     """Saves a `dataset_statistics.json` file."""
     out_path = run_dir / "dataset_statistics.json"
@@ -37,6 +99,7 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"):
     if dataset_py == "lerobot_datasets":
         from DiT4DiT.dataloader.lerobot_datasets import get_vla_dataset, collate_fn
         vla_dataset_cfg = cfg.datasets.vla_data
+        synchronize_discrete_action_data_config(cfg, vla_dataset_cfg)
 
         vla_dataset = get_vla_dataset(data_cfg=vla_dataset_cfg)
         

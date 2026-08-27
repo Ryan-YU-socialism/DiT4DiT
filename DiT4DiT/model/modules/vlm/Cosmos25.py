@@ -14,6 +14,7 @@ Goal:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, List, Optional, Sequence, Union
 
@@ -27,6 +28,42 @@ from DiT4DiT.model.framework.stage1 import resolve_world_model_generator
 
 def _exists(v) -> bool:
     return v is not None
+
+
+def encode_discrete_action_condition(
+    actions: torch.Tensor,
+    class_values: torch.Tensor,
+) -> torch.Tensor:
+    """Encode semantic per-axis actions as categorical one-hot features.
+
+    The dataset/policy boundary uses semantic values (for example ``-1, 0, 1``),
+    while the discrete world model must not treat those values as a continuous
+    coordinate.  Matching is deliberately exact: converting continuous offsets
+    to classes belongs in the dataset labelling pipeline, whose threshold is not
+    part of this repository.
+    """
+
+    if actions.ndim != 3:
+        raise ValueError(
+            "Discrete action_condition must have shape [B, horizon, action_dim], "
+            f"got {tuple(actions.shape)}"
+        )
+    values = torch.as_tensor(class_values, device=actions.device, dtype=actions.dtype)
+    if values.ndim != 1 or values.numel() != 3:
+        raise ValueError("Discrete action conditioning requires exactly three class values")
+    if not torch.isfinite(values).all() or torch.unique(values).numel() != values.numel():
+        raise ValueError("action_class_values must contain three distinct finite values")
+
+    matches = actions.unsqueeze(-1).eq(values.view(1, 1, 1, -1))
+    valid = matches.any(dim=-1)
+    if not bool(valid.all()):
+        invalid = torch.unique(actions[~valid].detach()).cpu().tolist()
+        raise ValueError(
+            "Discrete action_condition contains values outside action_class_values: "
+            f"{invalid}. Supply pre-discretized labels; no threshold is inferred."
+        )
+    class_indices = matches.to(torch.int64).argmax(dim=-1)
+    return F.one_hot(class_indices, num_classes=values.numel())
 
 
 @dataclass
@@ -119,19 +156,109 @@ class Cosmos25FeatureExtractor(nn.Module):
 
         stage1_cfg = getattr(getattr(config, "framework", None), "stage1", None)
         self.action_condition_projector = None
+        self.discrete_action_conditioning = False
         if bool(getattr(stage1_cfg, "enabled", False)):
+            action_cfg = config.framework.action_model
+            head_type = str(getattr(action_cfg, "action_head_type", "flow_matching")).lower()
+            self.discrete_action_conditioning = head_type in {
+                "discrete",
+                "categorical",
+                "discrete_action",
+            }
             configured_width = getattr(stage1_cfg, "prompt_embedding_dim", None)
             text_cfg = getattr(self.text_encoder, "config", None)
-            inferred_width = None
-            for name in ("d_model", "hidden_size", "projection_dim"):
-                value = getattr(text_cfg, name, None)
-                if isinstance(value, int) and value > 0:
-                    inferred_width = value
-                    break
-            prompt_width = int(configured_width or inferred_width or 2048)
-            action_cfg = config.framework.action_model
+            prompt_width = None
+            if configured_width is not None:
+                prompt_width = int(configured_width)
+                if prompt_width <= 0:
+                    raise ValueError("framework.stage1.prompt_embedding_dim must be positive")
+            elif self.discrete_action_conditioning:
+                # _get_prompt_embeds concatenates hidden_states[1:] across the
+                # feature dimension, so its width is layer_width * layer_count,
+                # not merely text_encoder.config.hidden_size.
+                candidate_configs = [text_cfg, getattr(text_cfg, "text_config", None)]
+                for candidate in candidate_configs:
+                    if candidate is None:
+                        continue
+                    layer_width = next(
+                        (
+                            value
+                            for name in ("d_model", "hidden_size", "projection_dim")
+                            if isinstance((value := getattr(candidate, name, None)), int)
+                            and value > 0
+                        ),
+                        None,
+                    )
+                    layer_count = next(
+                        (
+                            value
+                            for name in ("num_hidden_layers", "num_layers", "n_layer")
+                            if isinstance((value := getattr(candidate, name, None)), int)
+                            and value > 0
+                        ),
+                        None,
+                    )
+                    if layer_width is not None and layer_count is not None:
+                        prompt_width = layer_width * layer_count
+                        break
+                if prompt_width is None:
+                    raise ValueError(
+                        "Cannot infer the concatenated Cosmos prompt width. Set "
+                        "framework.stage1.prompt_embedding_dim explicitly."
+                    )
+            else:
+                # Keep the original continuous Stage-1 projector shape so old
+                # configs/checkpoints retain their exact parameter layout.
+                for name in ("d_model", "hidden_size", "projection_dim"):
+                    value = getattr(text_cfg, name, None)
+                    if isinstance(value, int) and value > 0:
+                        prompt_width = value
+                        break
+                prompt_width = int(prompt_width or 2048)
             action_horizon = int(action_cfg.future_action_window_size) + 1
-            action_condition_dim = action_horizon * int(action_cfg.action_dim)
+            action_dim = int(action_cfg.action_dim)
+            self.action_condition_horizon = action_horizon
+            self.action_condition_action_dim = action_dim
+            if self.discrete_action_conditioning:
+                num_classes = int(getattr(action_cfg, "num_action_classes", 3))
+                class_values = getattr(action_cfg, "action_class_values", None)
+                if action_horizon != 64 or action_dim != 3 or num_classes != 3:
+                    raise ValueError(
+                        "EndoWAM discrete world conditioning requires action_horizon=64, "
+                        "action_dim=3, and num_action_classes=3"
+                    )
+                if class_values is None:
+                    raise ValueError(
+                        "Discrete action conditioning requires explicit action_class_values; "
+                        "the class mapping is never guessed"
+                    )
+                class_values_tensor = torch.as_tensor(
+                    list(class_values), dtype=torch.float32
+                )
+                if (
+                    class_values_tensor.shape != (num_classes,)
+                    or not torch.isfinite(class_values_tensor).all()
+                    or torch.unique(class_values_tensor).numel() != num_classes
+                ):
+                    raise ValueError(
+                        "action_class_values must contain exactly three distinct finite values"
+                    )
+                required_values = torch.tensor([-1.0, 0.0, 1.0])
+                if not torch.equal(class_values_tensor.sort().values, required_values):
+                    raise ValueError(
+                        "action_class_values must be a permutation of [-1, 0, 1]"
+                    )
+                self.register_buffer(
+                    "action_condition_class_values",
+                    class_values_tensor,
+                    persistent=True,
+                )
+                # A separate one-hot feature for every (time, axis, class).  This
+                # avoids imposing an artificial continuous/ordinal geometry.
+                action_condition_dim = action_horizon * action_dim * num_classes
+            else:
+                # Preserve the original parameter shape and checkpoint layout.
+                action_condition_dim = action_horizon * action_dim
             self.action_condition_projector = nn.Linear(action_condition_dim, prompt_width)
 
         if _exists(device):
@@ -139,6 +266,44 @@ class Cosmos25FeatureExtractor(nn.Module):
 
         # Free memory
         del pipe
+
+    def _load_from_state_dict(
+        self,
+        state_dict: Mapping[str, torch.Tensor],
+        prefix: str,
+        local_metadata: dict[str, Any],
+        strict: bool,
+        missing_keys: list[str],
+        unexpected_keys: list[str],
+        error_msgs: list[str],
+    ) -> None:
+        """Prevent a world checkpoint from silently changing class semantics."""
+
+        if self.discrete_action_conditioning:
+            mapping_key = prefix + "action_condition_class_values"
+            incoming_mapping = state_dict.get(mapping_key)
+            if incoming_mapping is not None:
+                expected_mapping = self.action_condition_class_values.detach().to(
+                    device=incoming_mapping.device,
+                    dtype=incoming_mapping.dtype,
+                )
+                if incoming_mapping.shape != expected_mapping.shape or not torch.equal(
+                    incoming_mapping, expected_mapping
+                ):
+                    error_msgs.append(
+                        f"{mapping_key} conflicts with action_class_values in the "
+                        "current config"
+                    )
+
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
 
 
 
@@ -565,7 +730,24 @@ class Cosmos25FeatureExtractor(nn.Module):
                 if action_condition.shape[0] != b:
                     raise ValueError("action_condition batch must match videos")
                 projector_dtype = self.action_condition_projector.weight.dtype
-                action_flat = action_condition.to(device=device, dtype=projector_dtype).flatten(1)
+                if self.discrete_action_conditioning:
+                    expected_shape = (
+                        b,
+                        self.action_condition_horizon,
+                        self.action_condition_action_dim,
+                    )
+                    if tuple(action_condition.shape) != expected_shape:
+                        raise ValueError(
+                            "Discrete action_condition must have shape "
+                            f"{expected_shape}, got {tuple(action_condition.shape)}"
+                        )
+                    action_features = encode_discrete_action_condition(
+                        action_condition.to(device=device),
+                        self.action_condition_class_values,
+                    )
+                    action_flat = action_features.to(dtype=projector_dtype).flatten(1)
+                else:
+                    action_flat = action_condition.to(device=device, dtype=projector_dtype).flatten(1)
                 if action_flat.shape[-1] != self.action_condition_projector.in_features:
                     raise ValueError(
                         f"Flattened action condition has width {action_flat.shape[-1]}, expected "

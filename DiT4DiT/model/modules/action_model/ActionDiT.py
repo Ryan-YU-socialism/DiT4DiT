@@ -398,17 +398,28 @@ class FlowmatchingActionHead(nn.Module):
 
 
 def get_action_model(config=None):
-    """
-    Factory: build FlowmatchingActionHead from global framework config.
-    
-    Args:
-        config: Global config (expects config.framework.action_model namespace).
+    """Build the configured action head.
 
-    Returns:
-        FlowmatchingActionHead: Initialized FlowMatchingActionHead.
+    ``flow_matching`` remains the default so configs and checkpoints created
+    before the discrete EndoWAM head was added keep the exact same module and
+    parameter layout.  EndoWAM configs must opt in with
+    ``framework.action_model.action_head_type: discrete``.
     """
-    return FlowmatchingActionHead(
-        full_config=config
+    action_config = config.framework.action_model
+    action_head_type = str(getattr(action_config, "action_head_type", "flow_matching")).lower()
+
+    if action_head_type in {"flow_matching", "flowmatching", "continuous"}:
+        return FlowmatchingActionHead(full_config=config)
+    if action_head_type in {"discrete", "categorical", "discrete_action"}:
+        from DiT4DiT.model.modules.action_model.discrete_action_head import (
+            DiscreteActionHead,
+        )
+
+        return DiscreteActionHead(full_config=config)
+
+    raise ValueError(
+        "Unsupported framework.action_model.action_head_type "
+        f"{action_head_type!r}; expected 'flow_matching' or 'discrete'."
     )
 
 

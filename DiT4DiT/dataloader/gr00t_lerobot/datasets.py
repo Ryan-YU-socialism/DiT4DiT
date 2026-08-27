@@ -62,10 +62,159 @@ LE_ROBOT_STATS_FILENAME = "meta/stats_gr00t.json"
 LE_ROBOT_DATA_FILENAME = "data/*/*.parquet"
 LE_ROBOT_STEPS_FILENAME = "meta/steps.pkl"
 EPSILON = 5e-4
+DISCRETE_ACTION_TARGET_FORMATS = {"values", "class_indices"}
 
 #  LeRobot v3.0 dataset file names 
 LE_ROBOT3_TASKS_FILENAME = "meta/tasks.parquet"
 LE_ROBOT3_EPISODE_FILENAME = "meta/episodes/*/*.parquet"
+
+
+def validate_discrete_action_mapping(
+    action_class_values: Sequence[float | int],
+) -> np.ndarray:
+    """Validate and return the configured per-axis class semantics.
+
+    The loader deliberately does not infer a threshold or a class order from
+    continuous data. The supplied order is also used by the action head and is
+    therefore part of checkpoint semantics.
+    """
+    class_values = np.asarray(list(action_class_values))
+    if class_values.shape != (3,):
+        raise ValueError(
+            "Discrete actions require exactly three action_class_values; "
+            f"got shape {class_values.shape}."
+        )
+    if not np.issubdtype(class_values.dtype, np.number):
+        raise ValueError("action_class_values must be numeric.")
+    if not np.isfinite(class_values).all():
+        raise ValueError("action_class_values must all be finite.")
+    if np.unique(class_values).size != 3:
+        raise ValueError("action_class_values must contain three distinct values.")
+    if not np.array_equal(
+        np.sort(class_values.astype(np.float64, copy=False)),
+        np.asarray([-1.0, 0.0, 1.0]),
+    ):
+        raise ValueError(
+            "EndoWAM action_class_values must be a permutation of [-1, 0, 1]."
+        )
+    return class_values
+
+
+def build_action_valid_mask(
+    action_delta_indices: Sequence[int],
+    *,
+    base_index: int,
+    trajectory_length: int,
+    action_dim: int,
+) -> np.ndarray:
+    """Build a ``[horizon, action_dim]`` mask for episode-boundary padding."""
+    delta_indices = np.asarray(action_delta_indices)
+    if delta_indices.ndim != 1:
+        raise ValueError(
+            "action_delta_indices must be one-dimensional; "
+            f"got shape {delta_indices.shape}."
+        )
+    if action_dim <= 0:
+        raise ValueError(f"action_dim must be positive, got {action_dim}.")
+    if trajectory_length <= 0:
+        raise ValueError(
+            f"trajectory_length must be positive, got {trajectory_length}."
+        )
+    if not np.issubdtype(delta_indices.dtype, np.integer):
+        if not np.equal(delta_indices, np.round(delta_indices)).all():
+            raise ValueError("action_delta_indices must contain integers.")
+        delta_indices = delta_indices.astype(np.int64)
+
+    step_indices = int(base_index) + delta_indices.astype(np.int64, copy=False)
+    valid_time = np.logical_and(step_indices >= 0, step_indices < int(trajectory_length))
+    return np.repeat(valid_time[:, None], int(action_dim), axis=1)
+
+
+def get_shared_action_delta_indices(
+    delta_indices: dict[str, np.ndarray],
+    action_keys: Sequence[str],
+) -> np.ndarray:
+    """Return the common action sampling window, rejecting key misalignment."""
+    if not action_keys:
+        raise ValueError("At least one action key is required.")
+    first_key = action_keys[0]
+    if first_key not in delta_indices:
+        raise ValueError(f"Missing delta indices for action key {first_key!r}.")
+    shared = np.asarray(delta_indices[first_key])
+    for key in action_keys[1:]:
+        if key not in delta_indices:
+            raise ValueError(f"Missing delta indices for action key {key!r}.")
+        current = np.asarray(delta_indices[key])
+        if not np.array_equal(current, shared):
+            raise ValueError(
+                "All action keys must use identical delta indices; "
+                f"{first_key!r} and {key!r} differ."
+            )
+    return shared
+
+
+def validate_discrete_action_target(
+    action: np.ndarray,
+    *,
+    action_mask: np.ndarray,
+    action_horizon: int,
+    action_dim: int,
+    action_class_values: Sequence[float | int],
+    action_target_format: str,
+) -> None:
+    """Validate pre-discretized per-axis targets without inventing thresholds."""
+    action_array = np.asarray(action)
+    mask_array = np.asarray(action_mask, dtype=bool)
+    if not np.issubdtype(action_array.dtype, np.number):
+        raise ValueError("Discrete action targets must be numeric.")
+    expected_shape = (int(action_horizon), int(action_dim))
+    if action_array.shape != expected_shape:
+        raise ValueError(
+            "Discrete action target must have shape "
+            f"{expected_shape}, got {action_array.shape}."
+        )
+    if mask_array.shape != expected_shape:
+        raise ValueError(
+            f"Discrete action_mask must have shape {expected_shape}, got {mask_array.shape}."
+        )
+
+    target_format = str(action_target_format)
+    if target_format not in DISCRETE_ACTION_TARGET_FORMATS:
+        raise ValueError(
+            "action_target_format must be one of "
+            f"{sorted(DISCRETE_ACTION_TARGET_FORMATS)}, got {target_format!r}."
+        )
+
+    class_values = validate_discrete_action_mapping(action_class_values)
+    valid_targets = action_array[mask_array]
+    if valid_targets.size == 0:
+        return
+    if not np.isfinite(valid_targets).all():
+        raise ValueError("Valid discrete action targets must all be finite.")
+
+    if target_format == "values":
+        comparison_values = class_values.astype(valid_targets.dtype, copy=False)
+        is_known_value = np.equal(
+            valid_targets[:, None], comparison_values[None, :]
+        ).any(axis=1)
+        if not is_known_value.all():
+            unknown = np.unique(valid_targets[~is_known_value]).tolist()
+            raise ValueError(
+                "Discrete action values must exactly match action_class_values; "
+                f"found unknown values {unknown}. No discretization threshold is applied."
+            )
+        return
+
+    valid_indices = np.logical_and(
+        np.equal(valid_targets, np.round(valid_targets)),
+        np.logical_and(valid_targets >= 0, valid_targets < class_values.size),
+    )
+    if not valid_indices.all():
+        unknown = np.unique(valid_targets[~valid_indices]).tolist()
+        raise ValueError(
+            "class_indices targets must be integer indices in [0, 2]; "
+            f"found invalid values {unknown}."
+        )
 
 
 def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
@@ -166,6 +315,23 @@ class LeRobotSingleDataset(Dataset):
                 video_delta = None
             if video_delta is not None and "video" in modality_configs:
                 modality_configs["video"].delta_indices = list(video_delta)
+
+            discrete_actions = bool(self.data_cfg.get("discrete_actions", False))
+            action_delta = self.data_cfg.get("action_delta_indices", None)
+            if action_delta is None and discrete_actions:
+                action_horizon = int(self.data_cfg.get("action_horizon", 64))
+                action_delta = list(range(action_horizon))
+            if action_delta is not None and "action" in modality_configs:
+                action_delta = list(action_delta)
+                if discrete_actions:
+                    action_horizon = int(self.data_cfg.get("action_horizon", 64))
+                    expected_delta = list(range(action_horizon))
+                    if action_horizon != 64 or action_delta != expected_delta:
+                        raise ValueError(
+                            "EndoWAM discrete data requires action_horizon=64 and "
+                            "action_delta_indices=[0, ..., 63]."
+                        )
+                modality_configs["action"].delta_indices = action_delta
 
         self.modality_configs = modality_configs
         self.video_backend = video_backend
@@ -1501,6 +1667,51 @@ class LeRobotMixtureDataset(Dataset):
         self.seed = seed
         self.mode = mode
         self.data_cfg = kwargs["data_cfg"] if "data_cfg" in kwargs else None
+        self.discrete_actions = bool(
+            self.data_cfg.get("discrete_actions", False) if self.data_cfg is not None else False
+        )
+        self.discrete_action_horizon = None
+        self.discrete_action_dim = None
+        self.discrete_action_class_values = None
+        self.discrete_action_target_format = None
+        if self.discrete_actions:
+            self.discrete_action_horizon = int(self.data_cfg.get("action_horizon", 64))
+            self.discrete_action_dim = int(self.data_cfg.get("action_dim", 3))
+            if self.discrete_action_horizon != 64 or self.discrete_action_dim != 3:
+                raise ValueError(
+                    "EndoWAM discrete targets require action_horizon=64 and action_dim=3."
+                )
+
+            configured_values = self.data_cfg.get("action_class_values", None)
+            if configured_values is None:
+                raise ValueError(
+                    "Discrete data requires explicit action_class_values in dataset config; "
+                    "the loader will not infer a mapping."
+                )
+            self.discrete_action_class_values = validate_discrete_action_mapping(
+                configured_values
+            )
+            self.discrete_action_target_format = str(
+                self.data_cfg.get("action_target_format", "values")
+            )
+            if self.discrete_action_target_format not in DISCRETE_ACTION_TARGET_FORMATS:
+                raise ValueError(
+                    "action_target_format must be one of "
+                    f"{sorted(DISCRETE_ACTION_TARGET_FORMATS)}, got "
+                    f"{self.discrete_action_target_format!r}."
+                )
+
+            expected_delta = np.arange(self.discrete_action_horizon)
+            for dataset in self.datasets:
+                action_delta = get_shared_action_delta_indices(
+                    dataset.delta_indices,
+                    dataset.modality_keys["action"],
+                )
+                if not np.array_equal(action_delta, expected_delta):
+                    raise ValueError(
+                        f"Dataset {dataset.dataset_name!r} must sample discrete actions "
+                        "with action_delta_indices=[0, ..., 63]."
+                    )
 
         # Set properties for sampling
 
@@ -1772,7 +1983,13 @@ class LeRobotMixtureDataset(Dataset):
                 action = []
                 for action_key in dataset.modality_keys["action"]:
                     action.append(data[action_key])
-                action = np.concatenate(action, axis=1).astype(np.float16)
+                action = np.concatenate(action, axis=1)
+                if self.discrete_actions:
+                    # Keep the dataset's categorical semantics untouched. In
+                    # particular, do not normalize or threshold these labels.
+                    action = action.astype(np.float32, copy=False)
+                else:
+                    action = action.astype(np.float16, copy=False)
 
                 state = []
                 for state_key in dataset.modality_keys["state"]:
@@ -1782,7 +1999,17 @@ class LeRobotMixtureDataset(Dataset):
 
                 n_state_dims = state.shape[-1]
                 max_state_dim = int(self.data_cfg.get("max_state_dim", 64)) if self.data_cfg else 64
-                max_action_dim = int(self.data_cfg.get("max_action_dim", 32)) if self.data_cfg else 32
+                if self.discrete_actions:
+                    max_action_dim = int(
+                        self.data_cfg.get("max_action_dim", self.discrete_action_dim)
+                    )
+                    if max_action_dim != self.discrete_action_dim:
+                        raise ValueError(
+                            "Discrete dataset max_action_dim must equal action_dim=3; "
+                            f"got {max_action_dim}."
+                        )
+                else:
+                    max_action_dim = int(self.data_cfg.get("max_action_dim", 32)) if self.data_cfg else 32
 
                 if n_state_dims > max_state_dim:
                     state = state[:, : max_state_dim]
@@ -1799,11 +2026,37 @@ class LeRobotMixtureDataset(Dataset):
            
                 n_action_tokens = action.shape[0]  # T
                 n_action_dims = action.shape[1]
-                action = np.pad(action, ((0, 0), (0, max_action_dim - n_action_dims)), "constant")
+                if self.discrete_actions:
+                    trajectory_index = dataset.get_trajectory_index(trajectory_id)
+                    trajectory_length = int(dataset.trajectory_lengths[trajectory_index])
+                    action_delta = get_shared_action_delta_indices(
+                        dataset.delta_indices,
+                        dataset.modality_keys["action"],
+                    )
+                    action_mask = build_action_valid_mask(
+                        action_delta,
+                        base_index=step,
+                        trajectory_length=trajectory_length,
+                        action_dim=self.discrete_action_dim,
+                    )
+                    validate_discrete_action_target(
+                        action,
+                        action_mask=action_mask,
+                        action_horizon=self.discrete_action_horizon,
+                        action_dim=self.discrete_action_dim,
+                        action_class_values=self.discrete_action_class_values,
+                        action_target_format=self.discrete_action_target_format,
+                    )
+                else:
+                    action = np.pad(
+                        action,
+                        ((0, 0), (0, max_action_dim - n_action_dims)),
+                        "constant",
+                    )
 
-                # Create mask: [T, max_action_dim]
-                action_mask = np.zeros((n_action_tokens, max_action_dim), dtype=bool)
-                action_mask[:, :n_action_dims] = True
+                    # Legacy continuous path: [T, max_action_dim].
+                    action_mask = np.zeros((n_action_tokens, max_action_dim), dtype=bool)
+                    action_mask[:, :n_action_dims] = True
 
                 out = dict(
                     action=action,

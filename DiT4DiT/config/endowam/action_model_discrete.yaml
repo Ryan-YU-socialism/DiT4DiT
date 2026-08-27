@@ -1,0 +1,22 @@
+# EndoWAM discrete action/world-conditioning override. Merge this fragment and
+# discrete_dataset.yaml into a complete training config; neither fragment
+# changes the grounding/OBB labelling pipeline.
+framework:
+  stage1:
+    valid_action_dim: 3
+
+  action_model:
+    action_head_type: discrete
+    action_dim: 3
+    state_dim: 3
+    future_action_window_size: 63
+    action_horizon: 64
+
+    # Class order is part of checkpoint semantics. Do not reorder these values
+    # when resuming a checkpoint trained with this mapping.
+    num_action_classes: 3
+    action_class_values: [-1, 0, 1]
+    action_target_format: values
+
+    # No continuous-to-discrete threshold is applied in the model. The dataset
+    # must already provide one of action_class_values for each valid axis.

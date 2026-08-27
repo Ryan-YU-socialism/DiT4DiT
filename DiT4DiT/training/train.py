@@ -90,7 +90,11 @@ from DiT4DiT.dataloader import build_dataloader
 def prepare_data(cfg, accelerator, output_dir) -> Tuple[DataLoader, DataLoader]:
     """prepare training data"""
     # VLA data loader
-    logger.info(f"Creating VLA Dataset with Mixture `{cfg.datasets.vla_data.data_mix}`")
+    dataset_label = cfg.datasets.vla_data.get(
+        "dataset_name",
+        cfg.datasets.vla_data.get("data_mix", "<unconfigured>"),
+    )
+    logger.info(f"Creating VLA Dataset `{dataset_label}`")
     # Access in main process so this key is tracked and persisted by AccessTrackedConfig.
     action_video_freq_ratio = cfg.datasets.vla_data.get("action_video_freq_ratio", 1)
     logger.info(f"Using action_video_freq_ratio={action_video_freq_ratio}")
@@ -446,13 +450,37 @@ class VLATrainer(TrainerUtils):
         )
 
         if self.accelerator.is_main_process:
-            normalized_actions = output_dict["normalized_actions"]  # B, T, D
-            actions = np.array(actions)  # convert actions to numpy.ndarray
-            action_mask = np.array(action_mask)  # convert action_mask to numpy.ndarray [B, T, D]
-            # Apply action_mask: only compute MSE on valid (True) dimensions
-            masked_diff = (normalized_actions - actions) * action_mask
-            mse = (masked_diff ** 2).sum() / action_mask.sum()
-            step_metrics["mse_score"] = mse
+            predicted_actions = output_dict["normalized_actions"]  # B, T, D
+            action_horizon = int(self.model.config.framework.action_model.future_action_window_size) + 1
+            action_dim = int(self.model.config.framework.action_model.action_dim)
+            actions = np.asarray(actions)[:, -action_horizon:, :action_dim]
+            action_mask = np.asarray(action_mask)[:, -action_horizon:, :action_dim].astype(bool)
+
+            if bool(getattr(self.model, "discrete_actions", False)):
+                # Convert class-index datasets through the checkpoint's explicit
+                # mapping before comparing with decoded policy commands.
+                target_values = self.model.action_model.targets_to_values(
+                    torch.as_tensor(actions, device=self.model.device),
+                    valid_mask=torch.as_tensor(action_mask, device=self.model.device),
+                ).detach().cpu().numpy()
+                correct = predicted_actions == target_values
+                valid_axes = int(action_mask.sum())
+                step_metrics["action_axis_accuracy"] = (
+                    float(correct[action_mask].mean()) if valid_axes else 0.0
+                )
+
+                valid_steps = action_mask.any(axis=-1)
+                step_correct = np.logical_or(correct, ~action_mask).all(axis=-1)
+                step_metrics["action_step_accuracy"] = (
+                    float(step_correct[valid_steps].mean()) if valid_steps.any() else 0.0
+                )
+            else:
+                # Apply action_mask: only compute MSE on valid (True) dimensions.
+                masked_diff = (predicted_actions - actions) * action_mask
+                denominator = action_mask.sum()
+                step_metrics["mse_score"] = (
+                    float((masked_diff ** 2).sum() / denominator) if denominator else 0.0
+                )
 
         del examples
         dist.barrier()  # ensure all processes are synchronized
