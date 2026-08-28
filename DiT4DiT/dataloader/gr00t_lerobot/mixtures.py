@@ -12,6 +12,14 @@ from typing import Dict, List, Tuple
 ## {nakename: [(data_name, sampling_weight, robot_type)] }
 DATASET_NAMED_MIXTURES = {
 
+    # Google Drive folder: endowam_pseudo_z60.  All three subsets use the
+    # same LeRobot v2.1 schema and native per-axis {-1, 0, +1} commands.
+    "endowam_pseudo_z60": [
+        ("ureter", 1.0, "endowam_endoscope"),
+        ("ercp", 1.0, "endowam_endoscope"),
+        ("esophagus", 1.0, "endowam_endoscope"),
+    ],
+
     "custom_dataset": [
         ("custom_dataset_name", 1.0, "custom_robot_config"),
     ],

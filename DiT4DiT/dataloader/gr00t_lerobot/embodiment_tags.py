@@ -73,4 +73,5 @@ ROBOT_TYPE_TO_EMBODIMENT_TAG = {
     "custom_robot_config": EmbodimentTag.NEW_EMBODIMENT,
     "fourier_gr1_arms_waist": EmbodimentTag.GR1,
     "robotwin50": EmbodimentTag.NEW_EMBODIMENT,
+    "endowam_endoscope": EmbodimentTag.NEW_EMBODIMENT,
 }

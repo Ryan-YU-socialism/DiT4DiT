@@ -148,7 +148,9 @@ Stage 1 世界模型把解码后的 `[B,64,3]` 动作按每个“时间×轴”�
 
 模型不会从连续 offset 猜测离散阈值。`action_target_format: values` 要求数据集已产出 `action_class_values` 中的值；若旧数据保存的是 class id，则必须按该 checkpoint 的真实 mapping 配置 `action_class_values` 并使用 `action_target_format: class_indices`。
 
-离散数据加载器固定采样 `action_delta_indices=[0,...,63]`，校验动作恰为 `[64,3]`，并把 episode 末尾越界位置标成无效 mask。对于未注册的 EndoMotion LeRobot 数据，可在最终配置中填写 `dataset_name` 及真实的 `modality_keys.video/state/action/language`；示例字段已写在 dataset fragment 中，代码不会猜测数据列名或运行连续归一化。
+离散数据加载器固定采样 `action_delta_indices=[0,...,63]`，校验动作恰为 `[64,3]`，并把 episode 末尾越界位置标成无效 mask。Google Drive 的 `endowam_pseudo_z60` 已注册为同名 mixture，包含 `ureter`、`ercp`、`esophagus` 三个 LeRobot v2.1 子集；同步后令 `datasets.vla_data.data_root_dir` 指向包含这三个目录的本地路径即可。
+
+该数据集的实际映射为：`video.endoscope -> observation.images.endoscope`、`state.endoscope_state -> observation.state`、`action.endoscope_cmd -> action`、`annotation.human.action.task_description -> task_index`。Drive 元数据及 parquet 抽样均确认 state/action 为 3 维，合法值为 `{-1,0,1}`；加载器只做 tensor 转换，不对这些标签归一化或二次离散化。完整数据项配置见 [`DiT4DiT/config/endowam/discrete_dataset.yaml`](DiT4DiT/config/endowam/discrete_dataset.yaml)。
 
 ## 数据准备
 

@@ -3,12 +3,18 @@ import pytest
 from types import SimpleNamespace
 
 from DiT4DiT.dataloader import synchronize_discrete_action_data_config
+from DiT4DiT.dataloader.gr00t_lerobot.data_config import ROBOT_TYPE_CONFIG_MAP
 from DiT4DiT.dataloader.gr00t_lerobot.datasets import (
     build_action_valid_mask,
     get_shared_action_delta_indices,
     validate_discrete_action_mapping,
     validate_discrete_action_target,
 )
+from DiT4DiT.dataloader.gr00t_lerobot.embodiment_tags import (
+    EmbodimentTag,
+    ROBOT_TYPE_TO_EMBODIMENT_TAG,
+)
+from DiT4DiT.dataloader.gr00t_lerobot.mixtures import DATASET_NAMED_MIXTURES
 from DiT4DiT.dataloader.gr00t_lerobot.transform import ComposedModalityTransform
 from DiT4DiT.dataloader.gr00t_lerobot.transform.state_action import (
     StateActionToTensor,
@@ -199,3 +205,30 @@ def test_explicit_dataset_mapping_cannot_drift_from_action_head():
 
     with pytest.raises(ValueError, match="conflicts"):
         synchronize_discrete_action_data_config(cfg, data_cfg)
+
+
+def test_endowam_pseudo_z60_uses_the_drive_schema_for_all_subsets():
+    mixture = DATASET_NAMED_MIXTURES["endowam_pseudo_z60"]
+    assert mixture == [
+        ("ureter", 1.0, "endowam_endoscope"),
+        ("ercp", 1.0, "endowam_endoscope"),
+        ("esophagus", 1.0, "endowam_endoscope"),
+    ]
+
+    robot_config = ROBOT_TYPE_CONFIG_MAP["endowam_endoscope"]
+    modalities = robot_config.modality_config()
+    assert modalities["video"].modality_keys == ["video.endoscope"]
+    assert modalities["state"].modality_keys == ["state.endoscope_state"]
+    assert modalities["action"].modality_keys == ["action.endoscope_cmd"]
+    assert modalities["action"].delta_indices == list(range(64))
+    assert modalities["language"].modality_keys == [
+        "annotation.human.action.task_description"
+    ]
+    assert all(
+        isinstance(transform, StateActionToTensor)
+        for transform in robot_config.transform().transforms
+    )
+    assert (
+        ROBOT_TYPE_TO_EMBODIMENT_TAG["endowam_endoscope"]
+        is EmbodimentTag.NEW_EMBODIMENT
+    )

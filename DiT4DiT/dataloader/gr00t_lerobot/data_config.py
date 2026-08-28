@@ -1071,6 +1071,50 @@ class UnitreeG1AlohaFullBodyDataConfig(UnitreeG1DataConfig):
     action_indices = list(range(50))
 
 
+class EndoWAMEndoscopeDiscreteDataConfig(BaseDataConfig):
+    """LeRobot v2.x schema used by ``endowam_pseudo_z60``.
+
+    The Drive dataset stores both the previous pseudo action (state) and the
+    target motor command (action) as native ``-1/0/+1`` labels.  Only tensor
+    conversion is allowed here: normalizing either field would destroy its
+    categorical meaning.
+    """
+
+    video_keys = ["video.endoscope"]
+    state_keys = ["state.endoscope_state"]
+    action_keys = ["action.endoscope_cmd"]
+    language_keys = ["annotation.human.action.task_description"]
+    observation_indices = [0]
+    action_indices = list(range(64))
+
+    def modality_config(self) -> dict[str, ModalityConfig]:
+        return {
+            "video": ModalityConfig(
+                delta_indices=self.observation_indices,
+                modality_keys=self.video_keys,
+            ),
+            "state": ModalityConfig(
+                delta_indices=self.observation_indices,
+                modality_keys=self.state_keys,
+            ),
+            "action": ModalityConfig(
+                delta_indices=self.action_indices,
+                modality_keys=self.action_keys,
+            ),
+            "language": ModalityConfig(
+                delta_indices=self.observation_indices,
+                modality_keys=self.language_keys,
+            ),
+        }
+
+    def transform(self) -> ModalityTransform:
+        return ComposedModalityTransform(
+            transforms=[
+                StateActionToTensor(apply_to=self.state_keys),
+                StateActionToTensor(apply_to=self.action_keys),
+            ]
+        )
+
 
 ROBOT_TYPE_CONFIG_MAP = {
     "libero_franka": Libero4in1DataConfig(),
@@ -1086,5 +1130,5 @@ ROBOT_TYPE_CONFIG_MAP = {
     "custom_robot_config": SingleFrankaRobotiqDeltaEefDataConfig(),
     "g1_body29_aloha_arms_only": UnitreeG1AlohaOnlyArmsDataConfig(),
     "g1_body29_aloha_full_body": UnitreeG1AlohaFullBodyDataConfig(),
+    "endowam_endoscope": EndoWAMEndoscopeDiscreteDataConfig(),
 }
-
