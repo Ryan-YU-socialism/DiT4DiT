@@ -7,6 +7,7 @@ cd "${REPO_ROOT}"
 
 NUM_PROCESSES="${NUM_PROCESSES:-4}"
 PER_DEVICE_BATCH_SIZE="${PER_DEVICE_BATCH_SIZE:-4}"
+GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-2}"
 NUM_WORKERS="${NUM_WORKERS:-8}"
 MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-80000}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-10000}"
@@ -19,6 +20,7 @@ CONFIG_YAML="${CONFIG_YAML:-DiT4DiT/config/endowam/dit4dit_endowam_pseudo_z60_4x
 ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-DiT4DiT/config/deepseeds/deepspeed_endowam_4xh800.yaml}"
 DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-DiT4DiT/config/deepseeds/endowam_zero2_h800.json}"
 WANDB_MODE="${WANDB_MODE:-offline}"
+EXPECTED_GPU_SUBSTRING="${EXPECTED_GPU_SUBSTRING:-}"
 
 CODE_COMMIT="$(git rev-parse HEAD)"
 if [[ -n "$(git status --porcelain)" && "${ALLOW_DIRTY_WORKTREE:-0}" != "1" ]]; then
@@ -40,11 +42,13 @@ if [[ ! -d "${BASE_MODEL}" ]]; then
   exit 1
 fi
 
-python - "${NUM_PROCESSES}" <<'PY'
+python - "${NUM_PROCESSES}" "${EXPECTED_GPU_SUBSTRING}" <<'PY'
+from importlib.metadata import PackageNotFoundError, version
 import sys
 import torch
 
 requested = int(sys.argv[1])
+expected_name = sys.argv[2].strip().lower()
 available = torch.cuda.device_count()
 if available < requested:
     raise SystemExit(f"Requested {requested} GPUs, but PyTorch sees only {available}.")
@@ -54,10 +58,31 @@ if not torch.cuda.is_bf16_supported():
 print(f"torch={torch.__version__}, cuda={torch.version.cuda}, visible_gpus={available}")
 for index in range(requested):
     props = torch.cuda.get_device_properties(index)
+    if expected_name and expected_name not in props.name.lower():
+        raise SystemExit(
+            f"gpu[{index}] is {props.name!r}, expected a name containing {expected_name!r}."
+        )
     print(
         f"gpu[{index}]={props.name}, "
         f"memory={props.total_memory / 1024**3:.1f} GiB"
     )
+
+if "pro 6000" in expected_name:
+    if torch.version.cuda is None:
+        raise SystemExit("The selected PyTorch build does not include CUDA support.")
+    cuda_version = tuple(int(part) for part in torch.version.cuda.split(".")[:2])
+    if cuda_version < (12, 8):
+        raise SystemExit(
+            f"RTX PRO 6000 requires the CUDA 12.8 PyTorch build; got {torch.version.cuda}."
+        )
+    try:
+        triton_version = version("triton")
+    except PackageNotFoundError as exc:
+        raise SystemExit("Triton 3.3 is required for the Blackwell recipe.") from exc
+    if tuple(int(part) for part in triton_version.split(".")[:2]) < (3, 3):
+        raise SystemExit(
+            f"Triton >=3.3 is required for Blackwell; got {triton_version}."
+        )
 PY
 
 if command -v nvidia-smi >/dev/null 2>&1; then
@@ -96,7 +121,7 @@ if [[ "${RESUME}" != "true" && "${RESUME}" != "false" ]]; then
   exit 1
 fi
 
-GLOBAL_BATCH_SIZE=$((NUM_PROCESSES * PER_DEVICE_BATCH_SIZE * 2))
+GLOBAL_BATCH_SIZE=$((NUM_PROCESSES * PER_DEVICE_BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS))
 LOG_FILE="${OUTPUT_DIR}/train_$(date +%Y%m%d_%H%M%S).log"
 echo "Launching ${NUM_PROCESSES} GPUs with global batch ${GLOBAL_BATCH_SIZE}."
 echo "Code commit: ${CODE_COMMIT}"
@@ -105,6 +130,7 @@ echo "Base model: ${BASE_MODEL}"
 echo "Output: ${OUTPUT_DIR}"
 echo "Resume: ${RESUME}"
 echo "Max steps: ${MAX_TRAIN_STEPS}"
+echo "Gradient accumulation: ${GRADIENT_ACCUMULATION_STEPS}"
 echo "Log: ${LOG_FILE}"
 
 accelerate launch \
@@ -116,6 +142,8 @@ accelerate launch \
   --datasets.vla_data.data_root_dir "${DATA_ROOT_DIR}" \
   --datasets.vla_data.per_device_batch_size "${PER_DEVICE_BATCH_SIZE}" \
   --datasets.vla_data.num_workers "${NUM_WORKERS}" \
+  --trainer.deepspeed_config "${DEEPSPEED_CONFIG}" \
+  --trainer.gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}" \
   --trainer.max_train_steps "${MAX_TRAIN_STEPS}" \
   --trainer.save_interval "${SAVE_INTERVAL}" \
   --trainer.eval_interval "${EVAL_INTERVAL}" \
