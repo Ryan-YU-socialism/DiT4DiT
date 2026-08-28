@@ -1,5 +1,27 @@
 # EndoWAM `endowam_pseudo_z60` training
 
+## ren5: 2 x RTX 3090
+
+`ren5` currently has two healthy 24GB RTX 3090 GPUs at CUDA indices 0 and 1;
+the third physical card reports an NVML/PCIe error and must remain hidden. The
+ren5 recipe uses BF16, DeepSpeed ZeRO-3, CPU optimizer offload, micro-batch 1,
+and gradient accumulation 16, preserving global batch size 32. All large files
+live under `/mnt/data-hdd2/ljs` or `/mnt/data-hdd3/ljs`, never on the nearly-full
+root filesystem.
+
+Prepare the isolated environment, then launch in a detached tmux session:
+
+```bash
+bash examples/EndoWAM/train_files/setup_ren5_env.sh
+tmux new-session -d -s endowam-ren5 \
+  "bash examples/EndoWAM/train_files/run_endowam_ren5_2x3090.sh"
+tmux capture-pane -pt endowam-ren5:0 -S -100
+```
+
+Reconnect with `tmux attach -t endowam-ren5`. The launcher sets
+`CUDA_VISIBLE_DEVICES=0,1`, verifies both cards and all three dataset subsets,
+and resumes from the latest checkpoint in the same run directory by default.
+
 When H800 is unavailable, the recommended balanced AutoDL setup is one host
 with **4 x RTX PRO 6000 96GB**.  The recipe uses the CUDA 12.8 build of PyTorch
 2.7, Triton 3.3, BF16, DeepSpeed ZeRO-2, micro-batch 4 per GPU, and gradient

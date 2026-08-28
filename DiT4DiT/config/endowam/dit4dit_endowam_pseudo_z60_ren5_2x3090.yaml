@@ -1,0 +1,133 @@
+run_id: dit4dit_endowam_pseudo_z60_ren5_2x3090
+run_root_dir: /mnt/data-hdd3/ljs/experiments/DiT4DiT
+seed: 42
+trackers: [jsonl, wandb]
+wandb_entity: null
+wandb_project: DiT4DiT_EndoWAM
+is_debug: false
+
+framework:
+  name: DiT4DiT
+  stage1:
+    enabled: true
+    num_candidates: 4
+    valid_action_dim: 3
+    world_model_seed: 42
+    prompt_embedding_dim: null
+
+  cosmos25:
+    base_model: /mnt/data-hdd2/ljs/models/Cosmos-Predict2.5-2B
+    revision: diffusers/base/post-trained
+    local_files_only: true
+    torch_dtype: bfloat16
+    trainable: true
+    # Use PyTorch SDPA on Ampere so ren5 does not need a locally compiled
+    # flash-attn extension.
+    attn_implementation: sdpa
+    max_sequence_length: 512
+    extract_layer: 17
+    vl_hidden_dim: 2048
+    training: joint
+    future_num_inference_steps: 1
+    future_loss_type: flow_matching
+    flow_matching:
+      time_distribution: logit_normal
+      high_sigma_ratio: 0.05
+      high_sigma_min: 0.98
+    conditional_frame_timestep: 0.0001
+
+  action_model:
+    action_head_type: discrete
+    action_model_type: DiT-B
+    action_dim: 3
+    state_dim: 3
+    future_action_window_size: 63
+    action_horizon: 64
+    past_action_window_size: 0
+
+    num_action_classes: 3
+    action_class_values: [-1, 0, 1]
+    action_target_format: values
+
+    discrete_hidden_size: 512
+    discrete_num_attention_heads: 8
+    discrete_num_layers: 4
+    discrete_ffn_dim: 2048
+    discrete_dropout: 0.1
+    action_class_weights:
+      - [1.3440, 0.5661, 1.0899]
+      - [1.0071, 0.4424, 1.5505]
+      - [2.3255, 0.3415, 0.3330]
+
+datasets:
+  vla_data:
+    dataset_py: lerobot_datasets
+    data_root_dir: /mnt/data-hdd3/ljs/datasets/endowam_pseudo_z60
+    data_mix: endowam_pseudo_z60
+    lerobot_version: v2.0
+
+    include_state: true
+    discrete_actions: true
+    action_horizon: 64
+    action_dim: 3
+    max_action_dim: 3
+    max_state_dim: 3
+    action_class_values: [-1, 0, 1]
+    action_target_format: values
+
+    modality_keys:
+      video: [video.endoscope]
+      state: [state.endoscope_state]
+      action: [action.endoscope_cmd]
+      language: [annotation.human.action.task_description]
+
+    default_image_resolution: [3, 224, 224]
+    image_size: [224, 224]
+    per_device_batch_size: 1
+    video_delta_indices: [0, 16, 32, 48, 63]
+    action_video_freq_ratio: 1
+    video_backend: decord
+    delete_pause_frame: false
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 2
+
+trainer:
+  epochs: 100
+  max_train_steps: 80000
+  num_warmup_steps: 2000
+  save_interval: 10000
+  eval_interval: 2000
+  eval_with_stage1: false
+  logging_frequency: 10
+
+  learning_rate:
+    base: 1.0e-05
+    backbone_interface: 1.0e-05
+    action_model: 1.0e-04
+  lr_scheduler_type: cosine_with_min_lr
+  scheduler_specific_kwargs:
+    min_lr: 5.0e-07
+
+  loss_scale:
+    future_video: 0.5
+  freeze_modules: backbone_interface.extractor.text_encoder,backbone_interface.extractor.vae
+  repeated_diffusion_steps: 1
+  max_grad_norm: 1.0
+  gradient_clipping: 1.0
+  gradient_accumulation_steps: 16
+
+  optimizer:
+    name: AdamW
+    betas: [0.9, 0.95]
+    eps: 1.0e-08
+    weight_decay: 0.01
+
+  deepspeed_config: DiT4DiT/config/deepseeds/endowam_zero3_2x3090.json
+  pretrained_checkpoint: null
+  is_resume: false
+  resume_epoch: null
+  resume_step: null
+  enable_gradient_checkpointing: true
+  enable_mixed_precision_training: true
