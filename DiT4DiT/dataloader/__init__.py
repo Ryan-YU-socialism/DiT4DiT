@@ -103,14 +103,29 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"):
 
         vla_dataset = get_vla_dataset(data_cfg=vla_dataset_cfg)
         
-        vla_train_dataloader = DataLoader(
-            vla_dataset,
-            batch_size=cfg.datasets.vla_data.per_device_batch_size,
-            collate_fn=collate_fn,
-            num_workers=4,
-            # shuffle=True
-        )        
-        if dist.get_rank() == 0: 
+        num_workers = int(cfg.datasets.vla_data.get("num_workers", 4))
+        if num_workers < 0:
+            raise ValueError("datasets.vla_data.num_workers must be non-negative")
+        dataloader_kwargs = {
+            "dataset": vla_dataset,
+            "batch_size": cfg.datasets.vla_data.per_device_batch_size,
+            "collate_fn": collate_fn,
+            "num_workers": num_workers,
+            "pin_memory": bool(cfg.datasets.vla_data.get("pin_memory", True)),
+        }
+        if num_workers > 0:
+            dataloader_kwargs.update(
+                persistent_workers=bool(
+                    cfg.datasets.vla_data.get("persistent_workers", True)
+                ),
+                prefetch_factor=int(
+                    cfg.datasets.vla_data.get("prefetch_factor", 2)
+                ),
+            )
+
+        vla_train_dataloader = DataLoader(**dataloader_kwargs)
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        if rank == 0:
             
             output_dir = Path(cfg.output_dir)
             vla_dataset.save_dataset_statistics(output_dir / "dataset_statistics.json")

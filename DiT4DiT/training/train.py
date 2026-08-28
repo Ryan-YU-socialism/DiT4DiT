@@ -39,10 +39,52 @@ from DiT4DiT.training.trainer_utils.config_tracker import wrap_config, AccessTra
 
 # 强制绑定设备，消除警告
 # torch.cuda.set_device(local_rank)
-deepspeed_plugin = DeepSpeedPlugin(hf_ds_config="DiT4DiT/config/deepseeds/ds_config.yaml")
-# deepspeed_plugin = DeepSpeedPlugin()
-accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin)
-accelerator.print(accelerator.state)
+
+
+def build_accelerator(cfg) -> Accelerator:
+    """Build Accelerate/DeepSpeed after the run config has been loaded.
+
+    The previous module-level construction hard-coded the generic ZeRO-2 file
+    and forced gradient accumulation to one.  That made a launcher's selected
+    DeepSpeed config and ``trainer.gradient_accumulation_steps`` ineffective.
+    Keeping the values synchronized here is important for reproducible global
+    batch sizes on both single- and multi-GPU jobs.
+    """
+
+    default_ds_config = "DiT4DiT/config/deepseeds/ds_config.yaml"
+    configured_ds_path = cfg.trainer.get("deepspeed_config", default_ds_config)
+    ds_config_path = os.environ.get(
+        "DIT4DIT_DEEPSPEED_CONFIG", str(configured_ds_path)
+    )
+    if not Path(ds_config_path).is_file():
+        raise FileNotFoundError(
+            f"DeepSpeed config does not exist: {ds_config_path}. "
+            "Set trainer.deepspeed_config or DIT4DIT_DEEPSPEED_CONFIG."
+        )
+
+    accumulation_steps = int(cfg.trainer.gradient_accumulation_steps)
+    if accumulation_steps <= 0:
+        raise ValueError("trainer.gradient_accumulation_steps must be positive")
+
+    with open(ds_config_path, "r", encoding="utf-8") as config_file:
+        ds_config = yaml.safe_load(config_file)
+    ds_accumulation_steps = ds_config.get("gradient_accumulation_steps", "auto")
+    if (
+        ds_accumulation_steps != "auto"
+        and int(ds_accumulation_steps) != accumulation_steps
+    ):
+        raise ValueError(
+            "DeepSpeed gradient_accumulation_steps conflicts with the run config: "
+            f"{ds_accumulation_steps} != {accumulation_steps}."
+        )
+
+    deepspeed_plugin = DeepSpeedPlugin(hf_ds_config=ds_config_path)
+    accelerator = Accelerator(
+        deepspeed_plugin=deepspeed_plugin,
+        gradient_accumulation_steps=accumulation_steps,
+    )
+    accelerator.print(accelerator.state)
+    return accelerator
 
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -445,8 +487,14 @@ class VLATrainer(TrainerUtils):
         actions = [example["action"] for example in examples]  # label
         # Predict actions using the model
         action_mask = [example["action_mask"] for example in examples] # [B, len, action_dim]
+        eval_with_stage1 = bool(
+            self.config.trainer.get("eval_with_stage1", True)
+        )
         output_dict = self.model.predict_action(
-            examples=examples, use_ddim=True, num_ddim_steps=20
+            examples=examples,
+            use_ddim=True,
+            num_ddim_steps=20,
+            disable_stage1=not eval_with_stage1,
         )
 
         if self.accelerator.is_main_process:
@@ -599,6 +647,8 @@ class VLATrainer(TrainerUtils):
 
 def main(cfg) -> None:
     logger.info("VLA Training :: Warming Up")
+
+    accelerator = build_accelerator(cfg)
 
     #  Wrap config to enable access tracking
     cfg = wrap_config(cfg)

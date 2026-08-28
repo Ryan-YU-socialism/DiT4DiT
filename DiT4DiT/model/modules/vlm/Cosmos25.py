@@ -1137,6 +1137,23 @@ class _Cosmos25_Interface(nn.Module):
             config=config,
         )
 
+        trainer_cfg = getattr(config, "trainer", None) if config is not None else None
+        use_gradient_checkpointing = bool(
+            getattr(trainer_cfg, "enable_gradient_checkpointing", False)
+        )
+        if use_gradient_checkpointing:
+            enable_checkpointing = getattr(
+                self.extractor.transformer,
+                "enable_gradient_checkpointing",
+                None,
+            )
+            if not callable(enable_checkpointing):
+                raise RuntimeError(
+                    "Gradient checkpointing was requested, but the loaded Cosmos "
+                    "transformer does not expose enable_gradient_checkpointing()."
+                )
+            enable_checkpointing()
+
         # Try to set vl_hidden_dim in config if missing
         if config is not None and getattr(config.framework.cosmos25, "vl_hidden_dim", None) in (None, 0):
             hs = self.extractor.hidden_size

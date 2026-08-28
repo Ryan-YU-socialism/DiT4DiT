@@ -130,7 +130,7 @@ torch-einops-utils==0.0.12
 torchvision==0.22.0
 tqdm==4.66.5
 transformers==4.57.6
-triton==3.2.0
+triton==3.3.0
 typeguard==4.4.4
 typer-slim==0.21.1
 typing-inspection==0.4.2
