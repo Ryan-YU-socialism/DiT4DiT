@@ -11,16 +11,26 @@ export CONDA_PKGS_DIRS="${CONDA_PKGS_DIRS:-/mnt/data-hdd2/ljs/.conda/pkgs}"
 export PIP_CACHE_DIR="${PIP_CACHE_DIR:-/mnt/data-hdd2/ljs/.cache/pip}"
 export HF_HOME="${HF_HOME:-/mnt/data-hdd2/ljs/.cache/dit4dit/huggingface}"
 export TORCH_HOME="${TORCH_HOME:-/mnt/data-hdd2/ljs/.cache/dit4dit/torch}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/mnt/data-hdd2/ljs/.cache/dit4dit/xdg}"
+export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-/mnt/data-hdd2/ljs/.cache/dit4dit/torch_extensions}"
+export CUDA_CACHE_PATH="${CUDA_CACHE_PATH:-/mnt/data-hdd2/ljs/.cache/dit4dit/cuda}"
+export TMPDIR="${TMPDIR:-/mnt/data-hdd2/ljs/.cache/dit4dit/tmp}"
 
 if [[ ! -x "${CONDA_BIN}" ]]; then
   echo "Conda executable not found: ${CONDA_BIN}" >&2
   exit 1
 fi
 
-mkdir -p "${CONDA_PKGS_DIRS}" "${PIP_CACHE_DIR}" "${HF_HOME}" "${TORCH_HOME}"
+mkdir -p \
+  "${CONDA_PKGS_DIRS}" "${PIP_CACHE_DIR}" "${HF_HOME}" "${TORCH_HOME}" \
+  "${XDG_CACHE_HOME}" "${TORCH_EXTENSIONS_DIR}" "${CUDA_CACHE_PATH}" "${TMPDIR}"
 if [[ ! -x "${ENV_PREFIX}/bin/python" ]]; then
   "${CONDA_BIN}" create --prefix "${ENV_PREFIX}" python=3.10 pip -y
 fi
+
+"${CONDA_BIN}" install --prefix "${ENV_PREFIX}" \
+  --channel nvidia/label/cuda-12.4.1 cuda-nvcc=12.4 -y
+export CUDA_HOME="${ENV_PREFIX}"
 
 PYTHON="${ENV_PREFIX}/bin/python"
 "${PYTHON}" -m pip install --upgrade pip setuptools wheel
@@ -49,5 +59,7 @@ for index in range(2):
     assert "RTX 3090" in name, name
     print(index, name, torch.cuda.get_device_properties(index).total_memory / 1024**3)
 PY
+
+"${ENV_PREFIX}/bin/nvcc" --version
 
 echo "ren5 environment ready: ${ENV_PREFIX}"

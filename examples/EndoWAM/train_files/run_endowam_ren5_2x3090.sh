@@ -29,6 +29,15 @@ export BASE_MODEL="${BASE_MODEL:-/mnt/data-hdd2/ljs/models/Cosmos-Predict2.5-2B}
 export RUN_ROOT_DIR="${RUN_ROOT_DIR:-/mnt/data-hdd3/ljs/experiments/DiT4DiT}"
 export HF_HOME="${HF_HOME:-/mnt/data-hdd2/ljs/.cache/dit4dit/huggingface}"
 export TORCH_HOME="${TORCH_HOME:-/mnt/data-hdd2/ljs/.cache/dit4dit/torch}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/mnt/data-hdd2/ljs/.cache/dit4dit/xdg}"
+export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-/mnt/data-hdd2/ljs/.cache/dit4dit/torch_extensions}"
+export CUDA_CACHE_PATH="${CUDA_CACHE_PATH:-/mnt/data-hdd2/ljs/.cache/dit4dit/cuda}"
+export TMPDIR="${TMPDIR:-/mnt/data-hdd2/ljs/.cache/dit4dit/tmp}"
+export CUDA_HOME="${CUDA_HOME:-${ENV_PREFIX}}"
 export WANDB_MODE="${WANDB_MODE:-offline}"
+
+mkdir -p \
+  "${HF_HOME}" "${TORCH_HOME}" "${XDG_CACHE_HOME}" \
+  "${TORCH_EXTENSIONS_DIR}" "${CUDA_CACHE_PATH}" "${TMPDIR}"
 
 exec bash "${SCRIPT_DIR}/run_endowam_4xh800.sh"
