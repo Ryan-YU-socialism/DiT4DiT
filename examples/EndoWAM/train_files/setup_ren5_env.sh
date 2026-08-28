@@ -15,6 +15,11 @@ export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/mnt/data-hdd2/ljs/.cache/dit4dit/xdg}"
 export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-/mnt/data-hdd2/ljs/.cache/dit4dit/torch_extensions}"
 export CUDA_CACHE_PATH="${CUDA_CACHE_PATH:-/mnt/data-hdd2/ljs/.cache/dit4dit/cuda}"
 export TMPDIR="${TMPDIR:-/mnt/data-hdd2/ljs/.cache/dit4dit/tmp}"
+# ren5's shared user profile contains unrelated user-site packages and a stale
+# NVIDIA extra index. Neither may leak into this isolated training environment.
+export PYTHONNOUSERSITE=1
+export PIP_CONFIG_FILE=/dev/null
+unset PIP_EXTRA_INDEX_URL || true
 
 if [[ ! -x "${CONDA_BIN}" ]]; then
   echo "Conda executable not found: ${CONDA_BIN}" >&2

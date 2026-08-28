@@ -34,6 +34,7 @@ export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-/mnt/data-hdd2/ljs/.cache/d
 export CUDA_CACHE_PATH="${CUDA_CACHE_PATH:-/mnt/data-hdd2/ljs/.cache/dit4dit/cuda}"
 export TMPDIR="${TMPDIR:-/mnt/data-hdd2/ljs/.cache/dit4dit/tmp}"
 export CUDA_HOME="${CUDA_HOME:-${ENV_PREFIX}}"
+export PYTHONNOUSERSITE=1
 export WANDB_MODE="${WANDB_MODE:-offline}"
 
 mkdir -p \
