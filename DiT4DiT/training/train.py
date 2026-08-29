@@ -343,11 +343,13 @@ class VLATrainer(TrainerUtils):
     def _save_checkpoint(self):
         """save current training state"""
 
+        # ZeRO-3 consolidation is a collective operation. Every rank must enter
+        # get_state_dict(), even though only rank 0 writes the consolidated file.
+        state_dict = self.accelerator.get_state_dict(self.model)
         if self.accelerator.is_main_process:
 
             checkpoint_path = os.path.join(self.checkpoint_dir, f"steps_{self.completed_steps}")
             # save model state
-            state_dict = self.accelerator.get_state_dict(self.model)
             torch.save(state_dict, checkpoint_path + "_pytorch_model.pt")
 
             # save training metadata
@@ -371,6 +373,7 @@ class VLATrainer(TrainerUtils):
                 )
                 logger.info("✅ Configuration files saved")
 
+        del state_dict
         self.accelerator.wait_for_everyone()
 
     def _log_metrics(self, metrics):
@@ -630,13 +633,15 @@ class VLATrainer(TrainerUtils):
     def _finalize_training(self):
         """training end processing"""
         # save final model
+        # As above, ZeRO-3 requires every rank to participate in consolidation.
+        state_dict = self.accelerator.get_state_dict(self.model)
         if self.accelerator.is_main_process:
             final_checkpoint = os.path.join(self.config.output_dir, "final_model")
             os.makedirs(final_checkpoint, exist_ok=True)
-            state_dict = self.accelerator.get_state_dict(self.model)
             torch.save(state_dict, os.path.join(final_checkpoint, "pytorch_model.pt"))
             logger.info(f"Training complete. Final model saved at {final_checkpoint}")
 
+        del state_dict
 
         # close W&B
         if self.accelerator.is_main_process:
