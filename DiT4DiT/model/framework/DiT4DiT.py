@@ -236,7 +236,11 @@ class DiT4DiT(baseframework):
             out["future_video_loss"] = future_video_loss
         return out
 
-    @torch.inference_mode()
+    # DeepSpeed ZeRO-3 wraps Linear with a custom autograd Function that saves
+    # normal tensors even during evaluation. ``inference_mode`` creates special
+    # inference tensors that this wrapper cannot save; ``no_grad`` keeps eval
+    # memory bounded without changing the tensor type.
+    @torch.no_grad()
     def predict_action(
         self,
         examples: List[dict],
@@ -299,7 +303,7 @@ class DiT4DiT(baseframework):
         normalized_actions = pred_actions.detach().cpu().numpy()
         return {"normalized_actions": normalized_actions}
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def predict_action_stage1(self, examples: List[dict], num_candidates: Optional[int] = None):
         """Run the Stage-1 FOREWARN loop and return the best of K action plans.
 
