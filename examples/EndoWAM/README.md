@@ -99,6 +99,8 @@ For the two-card fallback, launch
 If the 96GB card still cannot sustain micro-batch 4 in the installed Cosmos
 build, use `PER_DEVICE_BATCH_SIZE=2 GRADIENT_ACCUMULATION_STEPS=4` on four cards
 or `PER_DEVICE_BATCH_SIZE=2 GRADIENT_ACCUMULATION_STEPS=8` on two cards, keeping
-global batch 32. `RESUME=auto` loads the newest model checkpoint from the same
-run directory. The current trainer restores model weights and the scheduler
-position, but initializes a fresh optimizer.
+global batch 32. `RESUME=auto` loads the newest checkpoint whose atomic
+completion manifest is present in the same run directory. The current trainer
+restores model, optimizer, scheduler, RNG, and dataloader position for a
+full-state resume. Set `RESUME=false` with an explicit pretrained checkpoint
+only when a weights-only warm start is intended.
