@@ -114,6 +114,10 @@ FORWARD_NVML(nvmlDeviceGetNvLinkRemotePciInfo,
 FORWARD_NVML(nvmlDeviceGetNvLinkRemotePciInfo_v2,
              (nvmlDevice_t device, unsigned int link, nvmlPciInfo_t *pci),
              (device, link, pci))
+FORWARD_NVML(nvmlDeviceGetNvLinkRemoteDeviceType,
+             (nvmlDevice_t device, unsigned int link,
+              nvmlIntNvLinkDeviceType_t *device_type),
+             (device, link, device_type))
 FORWARD_NVML(nvmlDeviceGetNvLinkCapability,
              (nvmlDevice_t device, unsigned int link,
               nvmlNvLinkCapability_t capability, unsigned int *result),
@@ -128,6 +132,10 @@ FORWARD_NVML(nvmlDeviceGetP2PStatus,
 FORWARD_NVML(nvmlDeviceGetFieldValues,
              (nvmlDevice_t device, int values_count, nvmlFieldValue_t *values),
              (device, values_count, values))
+FORWARD_NVML(nvmlDeviceGetComputeRunningProcesses,
+             (nvmlDevice_t device, unsigned int *info_count,
+              nvmlProcessInfo_v1_t *infos),
+             (device, info_count, infos))
 FORWARD_NVML(nvmlDeviceGetGpuFabricInfoV,
              (nvmlDevice_t device, nvmlGpuFabricInfoV_t *gpu_fabric_info),
              (device, gpu_fabric_info))
