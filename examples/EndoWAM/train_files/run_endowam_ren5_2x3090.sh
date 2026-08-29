@@ -37,6 +37,15 @@ export CUDA_HOME="${CUDA_HOME:-${ENV_PREFIX}}"
 export PYTHONNOUSERSITE=1
 export WANDB_MODE="${WANDB_MODE:-offline}"
 
+# GPU 2 has fallen off ren5's PCIe bus. NCCL enumerates every NVML device even
+# when CUDA_VISIBLE_DEVICES hides it, so use the process-local count filter if
+# setup has built it. This leaves the system driver and other processes alone.
+NVML_FILTER_DIR="${NVML_FILTER_DIR:-/mnt/data-hdd2/ljs/.cache/dit4dit/nvml_filter}"
+if [[ -s "${NVML_FILTER_DIR}/libnvidia-ml.so.1" ]]; then
+  export REN5_NVML_MAX_DEVICES=2
+  export LD_LIBRARY_PATH="${NVML_FILTER_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+fi
+
 mkdir -p \
   "${HF_HOME}" "${TORCH_HOME}" "${XDG_CACHE_HOME}" \
   "${TORCH_EXTENSIONS_DIR}" "${CUDA_CACHE_PATH}" "${TMPDIR}"

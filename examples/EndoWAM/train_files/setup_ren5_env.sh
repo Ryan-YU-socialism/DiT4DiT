@@ -66,5 +66,6 @@ for index in range(2):
 PY
 
 "${ENV_PREFIX}/bin/nvcc" --version
+bash "${SCRIPT_DIR}/build_ren5_nvml_filter.sh"
 
 echo "ren5 environment ready: ${ENV_PREFIX}"

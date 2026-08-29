@@ -62,7 +62,8 @@ verify_model() {
   for path in "${required[@]}"; do
     [[ -s "${MODEL_DIR}/${path}" ]] || return 1
   done
-  [[ "$(find "${MODEL_DIR}/text_encoder" -maxdepth 1 -name 'model-*-of-*.safetensors' | wc -l)" -eq 4 ]]
+  [[ "$(find "${MODEL_DIR}/text_encoder" -maxdepth 1 -name 'model-*-of-*.safetensors' | wc -l)" -eq 4 ]] \
+    || return 1
   ! find "${MODEL_DIR}" -name '*.incomplete' -print -quit | grep -q .
 }
 
