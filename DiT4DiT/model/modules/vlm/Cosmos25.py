@@ -876,14 +876,26 @@ class Cosmos25FeatureExtractor(nn.Module):
                 in_latents = in_latents.to(transformer_dtype)
                 in_timestep = cond_indicator * cond_timestep + (1 - cond_indicator) * sigma_t
 
-                model_out = self.transformer(
-                    hidden_states=in_latents,
-                    condition_mask=cond_mask_t,
-                    timestep=in_timestep,
-                    encoder_hidden_states=denoise_prompt_embeds,
-                    padding_mask=padding_mask,
-                    return_dict=False,
-                )[0]
+                # The hidden returned to the policy is detached, and the
+                # flow-matching objective below performs its own differentiable
+                # transformer call. Recording this first graph only doubles the
+                # activation peak without contributing gradients.
+                first_pass_needs_grad = not (
+                    detach
+                    and (
+                        train_flow_matching_only
+                        or gt_future_videos is None
+                    )
+                )
+                with torch.set_grad_enabled(first_pass_needs_grad):
+                    model_out = self.transformer(
+                        hidden_states=in_latents,
+                        condition_mask=cond_mask_t,
+                        timestep=in_timestep,
+                        encoder_hidden_states=denoise_prompt_embeds,
+                        padding_mask=padding_mask,
+                        return_dict=False,
+                    )[0]
 
                 # Replace conditional-frame velocity with gt_velocity (diffusers behavior)
                 if gt_velocity is not None:
@@ -901,6 +913,8 @@ class Cosmos25FeatureExtractor(nn.Module):
 
                 if i == stop_i:
                     break
+
+            del model_out
 
             if len(self._cached_hidden) == 0:
                 raise RuntimeError(
