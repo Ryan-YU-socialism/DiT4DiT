@@ -24,7 +24,10 @@ framework:
     # Use PyTorch SDPA on Ampere so ren5 does not need a locally compiled
     # flash-attn extension.
     attn_implementation: sdpa
-    max_sequence_length: 512
+    # All five task prompts in this dataset tokenize to at most 37 tokens
+    # after the Cosmos chat template. Avoid padding every cross-attention block
+    # to 512 tokens while retaining ample headroom for the fixed dataset.
+    max_sequence_length: 64
     extract_layer: 17
     vl_hidden_dim: 2048
     training: joint
@@ -83,7 +86,9 @@ datasets:
 
     default_image_resolution: [3, 224, 224]
     image_size: [224, 224]
-    per_device_batch_size: 6
+    # Two GPUs produce the reference recipe's effective batch of six without
+    # paying for three separately scheduled gradient-accumulation microsteps.
+    per_device_batch_size: 3
     video_delta_indices: [0, 16, 32, 48, 63]
     action_video_freq_ratio: 1
     video_backend: decord
@@ -116,7 +121,7 @@ trainer:
     min_lr: 5.0e-07
 
   loss_scale:
-    future_video: 0.5
+    future_video: 1.0
   freeze_modules: backbone_interface.extractor.text_encoder,backbone_interface.extractor.vae
   repeated_diffusion_steps: 1
   max_grad_norm: 1.0
@@ -127,9 +132,9 @@ trainer:
     name: AdamW
     betas: [0.9, 0.95]
     eps: 1.0e-08
-    weight_decay: 0.01
+    weight_decay: 1.0e-08
 
-  deepspeed_config: DiT4DiT/config/deepseeds/endowam_zero3_2x3090.json
+  deepspeed_config: DiT4DiT/config/deepseeds/endowam_zero2_2x3090.json
   pretrained_checkpoint: null
   is_resume: false
   resume_epoch: null

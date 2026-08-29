@@ -15,7 +15,7 @@ export PATH="${ENV_PREFIX}/bin:${PATH}"
 # CUDA and DeepSpeed until that hardware fault has been repaired and verified.
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 export NUM_PROCESSES="${NUM_PROCESSES:-2}"
-export PER_DEVICE_BATCH_SIZE="${PER_DEVICE_BATCH_SIZE:-6}"
+export PER_DEVICE_BATCH_SIZE="${PER_DEVICE_BATCH_SIZE:-3}"
 export GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-1}"
 export NUM_WORKERS="${NUM_WORKERS:-2}"
 export MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-100000}"
@@ -25,8 +25,16 @@ export EVAL_INTERVAL="${EVAL_INTERVAL:-100}"
 export RUN_ID="${RUN_ID:-dit4dit_endowam_pseudo_z60_ren5_2x3090}"
 export EXPECTED_GPU_SUBSTRING="${EXPECTED_GPU_SUBSTRING:-RTX 3090}"
 export CONFIG_YAML="${CONFIG_YAML:-DiT4DiT/config/endowam/dit4dit_endowam_pseudo_z60_ren5_2x3090.yaml}"
-export ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-DiT4DiT/config/deepseeds/deepspeed_endowam_ren5_2x3090.yaml}"
-export DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-DiT4DiT/config/deepseeds/endowam_zero3_2x3090.json}"
+export ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-DiT4DiT/config/deepseeds/deepspeed_endowam_ren5_zero2_2x3090.yaml}"
+export DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-DiT4DiT/config/deepseeds/endowam_zero2_2x3090.json}"
+
+# DeepSpeedCPUAdam uses an OpenMP-parallel update loop. torchrun otherwise
+# forces one thread per rank, which leaves ren5's 16 physical CPU cores idle.
+# Reserve four physical cores for the four DataLoader workers and the OS.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-6}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
 
 export DATA_ROOT_DIR="${DATA_ROOT_DIR:-/mnt/data-hdd3/ljs/datasets/endowam_pseudo_z60}"
 export BASE_MODEL="${BASE_MODEL:-/mnt/data-hdd2/ljs/models/Cosmos-Predict2.5-2B}"

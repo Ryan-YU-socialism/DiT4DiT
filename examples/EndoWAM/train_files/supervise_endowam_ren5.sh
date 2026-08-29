@@ -9,9 +9,13 @@ MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
 RETRY_DELAY_SECONDS="${RETRY_DELAY_SECONDS:-60}"
 NUM_PROCESSES="${NUM_PROCESSES:-2}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
-PER_DEVICE_BATCH_SIZE="${PER_DEVICE_BATCH_SIZE:-6}"
+PER_DEVICE_BATCH_SIZE="${PER_DEVICE_BATCH_SIZE:-3}"
 GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-1}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
+OMP_NUM_THREADS="${OMP_NUM_THREADS:-6}"
+MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
 MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-100000}"
 NUM_WARMUP_STEPS="${NUM_WARMUP_STEPS:-500}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-5000}"
@@ -23,8 +27,8 @@ SAVE_FINAL_MODEL="${SAVE_FINAL_MODEL:-true}"
 DATA_ROOT_DIR="${DATA_ROOT_DIR:-/mnt/data-hdd3/ljs/datasets/endowam_pseudo_z60}"
 BASE_MODEL="${BASE_MODEL:-/mnt/data-hdd2/ljs/models/Cosmos-Predict2.5-2B}"
 CONFIG_YAML="${CONFIG_YAML:-DiT4DiT/config/endowam/dit4dit_endowam_pseudo_z60_ren5_2x3090.yaml}"
-ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-DiT4DiT/config/deepseeds/deepspeed_endowam_ren5_2x3090.yaml}"
-DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-DiT4DiT/config/deepseeds/endowam_zero3_2x3090.json}"
+ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-DiT4DiT/config/deepseeds/deepspeed_endowam_ren5_zero2_2x3090.yaml}"
+DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-DiT4DiT/config/deepseeds/endowam_zero2_2x3090.json}"
 ENV_PREFIX="${ENV_PREFIX:-/mnt/data-hdd2/ljs/.conda/envs/dit4dit-ren5}"
 EXPECTED_GPU_SUBSTRING="${EXPECTED_GPU_SUBSTRING:-RTX 3090}"
 
@@ -36,6 +40,14 @@ if [[ ! "${RETRY_DELAY_SECONDS}" =~ ^[0-9]+$ ]]; then
   echo "RETRY_DELAY_SECONDS must be a non-negative integer; got ${RETRY_DELAY_SECONDS}" >&2
   exit 2
 fi
+for thread_variable in \
+  OMP_NUM_THREADS MKL_NUM_THREADS OPENBLAS_NUM_THREADS NUMEXPR_NUM_THREADS; do
+  thread_value="${!thread_variable}"
+  if [[ ! "${thread_value}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "${thread_variable} must be a positive integer; got ${thread_value}" >&2
+    exit 2
+  fi
+done
 if ! command -v flock >/dev/null 2>&1; then
   echo "flock is required to prevent duplicate supervisors for the same run." >&2
   exit 2
@@ -70,6 +82,10 @@ launch_config_candidate="$(mktemp "${SUPERVISOR_LOG_DIR}/launch_config.XXXXXX")"
   printf 'PER_DEVICE_BATCH_SIZE=%q\n' "${PER_DEVICE_BATCH_SIZE}"
   printf 'GRADIENT_ACCUMULATION_STEPS=%q\n' "${GRADIENT_ACCUMULATION_STEPS}"
   printf 'NUM_WORKERS=%q\n' "${NUM_WORKERS}"
+  printf 'OMP_NUM_THREADS=%q\n' "${OMP_NUM_THREADS}"
+  printf 'MKL_NUM_THREADS=%q\n' "${MKL_NUM_THREADS}"
+  printf 'OPENBLAS_NUM_THREADS=%q\n' "${OPENBLAS_NUM_THREADS}"
+  printf 'NUMEXPR_NUM_THREADS=%q\n' "${NUMEXPR_NUM_THREADS}"
   printf 'MAX_TRAIN_STEPS=%q\n' "${MAX_TRAIN_STEPS}"
   printf 'NUM_WARMUP_STEPS=%q\n' "${NUM_WARMUP_STEPS}"
   printf 'SAVE_INTERVAL=%q\n' "${SAVE_INTERVAL}"
@@ -130,6 +146,10 @@ for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
   PER_DEVICE_BATCH_SIZE="${PER_DEVICE_BATCH_SIZE}" \
   GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS}" \
   NUM_WORKERS="${NUM_WORKERS}" \
+  OMP_NUM_THREADS="${OMP_NUM_THREADS}" \
+  MKL_NUM_THREADS="${MKL_NUM_THREADS}" \
+  OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS}" \
+  NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS}" \
   MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS}" \
   NUM_WARMUP_STEPS="${NUM_WARMUP_STEPS}" \
   SAVE_INTERVAL="${SAVE_INTERVAL}" \
