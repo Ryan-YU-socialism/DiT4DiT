@@ -10,6 +10,7 @@ PER_DEVICE_BATCH_SIZE="${PER_DEVICE_BATCH_SIZE:-4}"
 GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-2}"
 NUM_WORKERS="${NUM_WORKERS:-8}"
 MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-80000}"
+NUM_WARMUP_STEPS="${NUM_WARMUP_STEPS:-2000}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-10000}"
 EVAL_INTERVAL="${EVAL_INTERVAL:-2000}"
 LOGGING_FREQUENCY="${LOGGING_FREQUENCY:-10}"
@@ -126,7 +127,7 @@ if [[ "${RESUME}" != "true" && "${RESUME}" != "false" ]]; then
 fi
 for integer_name in \
   NUM_PROCESSES PER_DEVICE_BATCH_SIZE GRADIENT_ACCUMULATION_STEPS \
-  MAX_TRAIN_STEPS SAVE_INTERVAL EVAL_INTERVAL LOGGING_FREQUENCY; do
+  MAX_TRAIN_STEPS NUM_WARMUP_STEPS SAVE_INTERVAL EVAL_INTERVAL LOGGING_FREQUENCY; do
   integer_value="${!integer_name}"
   if [[ ! "${integer_value}" =~ ^[1-9][0-9]*$ ]]; then
     echo "${integer_name} must be a positive integer; got ${integer_value}" >&2
@@ -151,6 +152,7 @@ echo "Base model: ${BASE_MODEL}"
 echo "Output: ${OUTPUT_DIR}"
 echo "Resume: ${RESUME}"
 echo "Max steps: ${MAX_TRAIN_STEPS}"
+echo "Warmup steps: ${NUM_WARMUP_STEPS}"
 echo "Gradient accumulation: ${GRADIENT_ACCUMULATION_STEPS}"
 echo "Logging frequency: ${LOGGING_FREQUENCY}"
 echo "Save consolidated checkpoints: ${SAVE_CONSOLIDATED_CHECKPOINTS}"
@@ -170,6 +172,7 @@ accelerate launch \
   --trainer.deepspeed_config "${DEEPSPEED_CONFIG}" \
   --trainer.gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}" \
   --trainer.max_train_steps "${MAX_TRAIN_STEPS}" \
+  --trainer.num_warmup_steps "${NUM_WARMUP_STEPS}" \
   --trainer.save_interval "${SAVE_INTERVAL}" \
   --trainer.eval_interval "${EVAL_INTERVAL}" \
   --trainer.logging_frequency "${LOGGING_FREQUENCY}" \

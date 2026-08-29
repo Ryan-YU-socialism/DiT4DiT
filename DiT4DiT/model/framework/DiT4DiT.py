@@ -300,7 +300,10 @@ class DiT4DiT(baseframework):
         with torch.autocast("cuda", dtype=torch.float32):
             pred_actions = self.action_model.predict_action(last_hidden, state)  # (B, chunk_len, action_dim)
 
-        normalized_actions = pred_actions.detach().cpu().numpy()
+        # NumPy has no native bfloat16 dtype. Evaluation runs under BF16 on
+        # ren5, so materialize portable float32 values before crossing the
+        # PyTorch/NumPy boundary.
+        normalized_actions = pred_actions.detach().float().cpu().numpy()
         return {"normalized_actions": normalized_actions}
 
     @torch.no_grad()
