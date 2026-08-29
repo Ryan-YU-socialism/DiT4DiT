@@ -19,6 +19,13 @@ from torch import nn
 _MISSING = object()
 
 
+def _unique_for_validation(values: torch.Tensor) -> torch.Tensor:
+    """Run unique in a dtype supported consistently on CPU and CUDA."""
+    if values.dtype in (torch.float16, torch.bfloat16):
+        values = values.float()
+    return torch.unique(values)
+
+
 def _config_get(config: Any, name: str, default: Any = _MISSING) -> Any:
     """Read a field from a dict, OmegaConf object, or namespace."""
 
@@ -111,7 +118,7 @@ def decode_discrete_action_targets(
         matches = actions.unsqueeze(-1).eq(values_for_match.view(*(1,) * actions.ndim, 3))
         invalid = mask & ~matches.any(dim=-1)
         if invalid.any():
-            bad_values = torch.unique(actions[invalid]).detach().cpu().tolist()
+            bad_values = _unique_for_validation(actions[invalid]).detach().cpu().tolist()
             raise ValueError(
                 "Every valid discrete action must exactly match action_class_values; "
                 f"invalid values include {bad_values[:8]}. No threshold is inferred."
@@ -128,7 +135,7 @@ def decode_discrete_action_targets(
         class_indices = safe_actions.to(torch.int64)
         invalid = mask & ((class_indices < 0) | (class_indices >= 3))
         if invalid.any():
-            bad_values = torch.unique(actions[invalid]).detach().cpu().tolist()
+            bad_values = _unique_for_validation(actions[invalid]).detach().cpu().tolist()
             raise ValueError(
                 "Valid class-index actions must be in [0, 2]; "
                 f"invalid values include {bad_values[:8]}"
@@ -349,7 +356,7 @@ class DiscreteActionHead(nn.Module):
             raise ValueError("action_class_values must be a flat sequence of three values")
         if not torch.isfinite(values).all():
             raise ValueError("action_class_values must all be finite")
-        if torch.unique(values).numel() != cls.NUM_CLASSES:
+        if _unique_for_validation(values).numel() != cls.NUM_CLASSES:
             raise ValueError("action_class_values must be pairwise distinct")
         required_values = torch.tensor([-1.0, 0.0, 1.0], dtype=values.dtype)
         if not torch.equal(values.sort().values, required_values):
@@ -628,7 +635,7 @@ class DiscreteActionHead(nn.Module):
             values = self.action_class_values.to(
                 device=actions.device, dtype=actions.dtype
             )
-            if torch.unique(values).numel() != self.NUM_CLASSES:
+            if _unique_for_validation(values).numel() != self.NUM_CLASSES:
                 raise ValueError(
                     f"action dtype {actions.dtype} cannot represent all configured "
                     "action_class_values distinctly"
@@ -637,7 +644,7 @@ class DiscreteActionHead(nn.Module):
             match_count = matches.sum(dim=-1)
             invalid = valid_mask & (match_count != 1)
             if invalid.any():
-                bad_values = torch.unique(actions[invalid]).detach().cpu().tolist()
+                bad_values = _unique_for_validation(actions[invalid]).detach().cpu().tolist()
                 raise ValueError(
                     "Every valid value-formatted action target must exactly equal one "
                     "configured action_class_values entry; invalid values include "
@@ -656,7 +663,7 @@ class DiscreteActionHead(nn.Module):
             targets = actions.to(dtype=torch.long)
             invalid = valid_mask & ((targets < 0) | (targets >= self.NUM_CLASSES))
             if invalid.any():
-                bad_values = torch.unique(actions[invalid]).detach().cpu().tolist()
+                bad_values = _unique_for_validation(actions[invalid]).detach().cpu().tolist()
                 raise ValueError(
                     f"Valid class-index targets must be in [0, {self.NUM_CLASSES - 1}]; "
                     f"invalid values include {bad_values[:8]}"

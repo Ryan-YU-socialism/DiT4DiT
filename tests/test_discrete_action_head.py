@@ -158,6 +158,18 @@ def test_forward_accepts_float16_targets_and_computes_masked_ce(monkeypatch):
     assert torch.allclose(loss.float(), expected.float())
 
 
+def test_bfloat16_value_targets_encode_without_unique_kernel(monkeypatch):
+    head = _make_head(monkeypatch)
+    targets = torch.tensor(
+        [[[-1.0, 0.0, 1.0], [1.0, -1.0, 0.0]]],
+        dtype=torch.bfloat16,
+    )
+
+    class_indices = head.encode_targets(targets)
+
+    assert class_indices.tolist() == [[[0, 1, 2], [2, 0, 1]]]
+
+
 def test_masked_invalid_target_is_ignored_before_encoding(monkeypatch):
     head = _make_head(monkeypatch)
     logits = torch.zeros(1, 64, 3, 3)
