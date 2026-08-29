@@ -6,6 +6,7 @@ endpoints (e.g., JSONL local logs, Weights & Biases).
 """
 
 from typing import Tuple
+import os
 import re
 import json
 import numpy as np
@@ -295,6 +296,15 @@ class TrainerUtils:
         if hasattr(dataloader, "sampler") and callable(getattr(dataloader.sampler, "set_epoch", None)):
             dataloader.sampler.set_epoch(epoch_counter)
 
+        # LeRobotMixtureDataset derives each sampled step from
+        # (epoch, index, seed). Updating only the sampler repeats the exact same
+        # trajectories on every pass because this loader is sequential. The
+        # Accelerate DataLoaderShard keeps the original dataset on .dataset.
+        dataset = getattr(dataloader, "dataset", None)
+        set_dataset_epoch = getattr(dataset, "set_epoch", None)
+        if callable(set_dataset_epoch):
+            set_dataset_epoch(epoch_counter)
+
         # 3. create new iterator
         return iter(dataloader), epoch_counter
 
@@ -458,41 +468,55 @@ class TrainerUtils:
             return None
 
     def _get_latest_checkpoint(self, checkpoint_dir):
-        """Find the latest checkpoint in the directory based on step number."""
+        """Find the newest atomically published full-state checkpoint."""
         if not os.path.exists(checkpoint_dir):
             self.accelerator.print(f"No checkpoint directory found at {checkpoint_dir}")
             return None, 0
 
-        # 获取所有符合命名规则，确保只匹配以 .pt 结尾的文件
-        checkpoints = [
-            f for f in os.listdir(checkpoint_dir) 
-            if re.match(r"steps_(\d+)_pytorch_model\.pt$", f)  # 添加 $ 确保以 .pt 结尾
-            and os.path.isfile(os.path.join(checkpoint_dir, f))  # 确保是文件
-        ]
+        manifests = []
+        for filename in os.listdir(checkpoint_dir):
+            match = re.match(r"steps_(\d+)_complete\.json$", filename)
+            if match:
+                manifests.append((int(match.group(1)), filename))
 
-        if not checkpoints:
-            self.accelerator.print(f"No checkpoints found in {checkpoint_dir}")
-            return None, 0
+        for completed_steps, filename in sorted(manifests, reverse=True):
+            manifest_path = os.path.join(checkpoint_dir, filename)
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as input_file:
+                    manifest = json.load(input_file)
+                if int(manifest["format_version"]) != 1:
+                    raise ValueError("unsupported checkpoint format")
+                if int(manifest["steps"]) != completed_steps:
+                    raise ValueError("manifest step does not match its filename")
+                consumed_data_batches = int(
+                    manifest.get(
+                        "consumed_data_batches",
+                        completed_steps
+                        * int(self.config.trainer.gradient_accumulation_steps),
+                    )
+                )
+                if consumed_data_batches < 0:
+                    raise ValueError("consumed_data_batches must be non-negative")
+                state_path = os.path.join(checkpoint_dir, manifest["state_dir"])
+                if not os.path.isdir(state_path):
+                    raise FileNotFoundError(state_path)
+                model_file = manifest.get("model_file")
+                if model_file:
+                    model_path = os.path.join(checkpoint_dir, model_file)
+                    if not os.path.isfile(model_path) or os.path.getsize(model_path) == 0:
+                        raise FileNotFoundError(model_path)
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                self.accelerator.print(
+                    f"Skipping incomplete checkpoint manifest {manifest_path}: {exc}"
+                )
+                continue
 
-        # 提取步数并排序
-        try:
-            checkpoints_with_steps = [
-                (ckpt, int(re.search(r"steps_(\d+)_pytorch_model\.pt", ckpt).group(1)))
-                for ckpt in checkpoints
-            ]
-        except AttributeError as e:
-            self.accelerator.print(f"Error parsing checkpoint filenames: {e}")
-            return None, 0
+            self.accelerator.print(f"Latest complete checkpoint found: {state_path}")
+            self.consumed_data_batches = consumed_data_batches
+            return state_path, completed_steps
 
-        # 按步数排序，获取最新的 checkpoint
-        checkpoints_with_steps.sort(key=lambda x: x[1])
-        latest_checkpoint, completed_steps = checkpoints_with_steps[-1]
-
-        latest_checkpoint_path = os.path.join(checkpoint_dir, latest_checkpoint)
-        self.accelerator.print(f"Latest checkpoint found: {latest_checkpoint_path}")
-        return latest_checkpoint_path, completed_steps
-
-import os
+        self.accelerator.print(f"No complete checkpoints found in {checkpoint_dir}")
+        return None, 0
 
 
 def is_main_process():

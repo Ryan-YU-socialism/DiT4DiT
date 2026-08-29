@@ -31,6 +31,8 @@ download_once() {
     echo "network_route=clash proxy=${REN5_PROXY}"
     network_env=(
       env
+      -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
+      -u http_proxy -u https_proxy -u all_proxy
       HTTP_PROXY="${REN5_PROXY}" HTTPS_PROXY="${REN5_PROXY}"
       http_proxy="${REN5_PROXY}" https_proxy="${REN5_PROXY}"
     )

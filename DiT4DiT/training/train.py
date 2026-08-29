@@ -9,8 +9,9 @@
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import time
@@ -148,9 +149,8 @@ def prepare_data(cfg, accelerator, output_dir) -> Tuple[DataLoader, DataLoader]:
     return vla_train_dataloader
 
 
-def setup_optimizer_and_scheduler(model, cfg) -> Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
-    """set optimizer and scheduler"""
-    # initialize optimizer
+def setup_optimizer(model, cfg) -> torch.optim.Optimizer:
+    """Create the optimizer before DeepSpeed wraps the model."""
     param_groups = build_param_lr_groups(model=model, cfg=cfg)
     optimizer = torch.optim.AdamW(
         param_groups,
@@ -165,8 +165,19 @@ def setup_optimizer_and_scheduler(model, cfg) -> Tuple[torch.optim.Optimizer, to
         for i, group in enumerate(optimizer.param_groups):
             logger.info(f"LR Group {group['name']}: lr={group['lr']}, num_params={len(group['params'])}")
 
-    # initialize learning rate scheduler
-    lr_scheduler = get_scheduler(
+    return optimizer
+
+
+def setup_lr_scheduler(
+    optimizer: torch.optim.Optimizer, cfg
+) -> torch.optim.lr_scheduler.LRScheduler:
+    """Create a scheduler bound to the optimizer that performs updates.
+
+    Accelerate replaces AdamW with DeepSpeedCPUAdam for the ren5 ZeRO-3
+    recipe. Creating the scheduler before ``accelerator.prepare`` leaves it
+    attached to the discarded AdamW instance and silently trains at LR=0.
+    """
+    return get_scheduler(
         name=cfg.trainer.lr_scheduler_type,
         optimizer=optimizer,
         num_warmup_steps=cfg.trainer.num_warmup_steps,
@@ -174,20 +185,20 @@ def setup_optimizer_and_scheduler(model, cfg) -> Tuple[torch.optim.Optimizer, to
         scheduler_specific_kwargs=cfg.trainer.scheduler_specific_kwargs,  # minimum learning rate
     )
 
-    return optimizer, lr_scheduler
-
 
 class VLATrainer(TrainerUtils):
-    def __init__(self, cfg, model, vla_train_dataloader, optimizer, lr_scheduler, accelerator):
+    def __init__(self, cfg, model, vla_train_dataloader, optimizer, accelerator):
         self.config = cfg
         self.model = model
         self.vla_train_dataloader = vla_train_dataloader
         self.optimizer = optimizer
-        self.lr_scheduler = lr_scheduler
+        self.lr_scheduler = None
         self.accelerator = accelerator
+        self.resume_state_checkpoint: Optional[str] = None
 
         # training status tracking
         self.completed_steps = 0
+        self.consumed_data_batches = 0
         self.total_batch_size = self._calculate_total_batch_size()
     
     def prepare_training(self):
@@ -197,9 +208,6 @@ class VLATrainer(TrainerUtils):
 
         # load pretrained weights
         self._init_checkpointing()
-
-        # 根据  resume 调整 lr_scheduler
-        self._adjust_lr_scheduler_for_resume()
 
         # freeze parameters
         freeze_modules = (
@@ -264,23 +272,53 @@ class VLATrainer(TrainerUtils):
             self.vla_train_dataloader,
         )
 
+        # DeepSpeed may replace AdamW with DeepSpeedCPUAdam. Build the raw
+        # scheduler only now, bound directly to the optimizer that performs
+        # updates. AcceleratedScheduler would over-step it by world size when
+        # split_batches=False, so register it as an ordinary checkpointable.
+        actual_optimizer = self._get_actual_optimizer()
+        model_optimizer = getattr(self.model, "optimizer", None)
+        if model_optimizer is not None and model_optimizer is not actual_optimizer:
+            raise RuntimeError(
+                "Accelerate and DeepSpeed expose different optimizer instances."
+            )
+        # The Accelerate wrapper is a torch Optimizer (required by PyTorch's
+        # LRScheduler) and its param_groups transparently reference ZeRO-3's
+        # underlying optimizer. The raw ZeRO optimizer is not a torch Optimizer.
+        self.lr_scheduler = setup_lr_scheduler(self.optimizer, self.config)
+        self.accelerator.register_for_checkpointing(self.lr_scheduler)
+
+        if self.resume_state_checkpoint:
+            self._load_checkpoint(self.resume_state_checkpoint)
+        self._sync_scheduler_lrs()
+
+        if self.accelerator.is_main_process:
+            logger.info(
+                "Prepared optimizer learning rates: %s",
+                [group["lr"] for group in self.optimizer.param_groups],
+            )
+
         self._init_wandb()
 
 
-    def _adjust_lr_scheduler_for_resume(self):
-        """根据已完成的步数调整学习率调度器状态"""
-        if self.completed_steps > 0:
-            logger.info(f"Adjusting LR scheduler for resume from step {self.completed_steps}")
-            
-            # 方法1: 直接模拟已完成的步数（适用于大多数调度器）
-            for _ in range(self.completed_steps):
-                self.lr_scheduler.step()
-            
-            # 或者方法2: 对于某些调度器，可以直接设置最后步数
-            # if hasattr(self.lr_scheduler, '_step_count'):
-            #     self.lr_scheduler._step_count = self.completed_steps
-            
-            logger.info(f"LR scheduler adjusted to step {self.completed_steps}, current LR: {self.lr_scheduler.get_last_lr()}")
+    def _get_actual_optimizer(self):
+        """Return the optimizer owned by the DeepSpeed engine, if wrapped."""
+        return getattr(self.optimizer, "optimizer", self.optimizer)
+
+    def _sync_scheduler_lrs(self):
+        """Validate and publish scheduled LRs to the real optimizer groups."""
+        scheduled_lrs = [float(lr) for lr in self.lr_scheduler.get_last_lr()]
+        if len(scheduled_lrs) != len(self.optimizer.param_groups):
+            raise RuntimeError(
+                "Scheduler/optimizer parameter-group mismatch: "
+                f"{len(scheduled_lrs)} != {len(self.optimizer.param_groups)}"
+            )
+        if not all(np.isfinite(lr) and lr >= 0 for lr in scheduled_lrs):
+            raise RuntimeError(f"Scheduler produced invalid learning rates: {scheduled_lrs}")
+        for group, learning_rate in zip(
+            self.optimizer.param_groups, scheduled_lrs
+        ):
+            group["lr"] = learning_rate
 
     def _calculate_total_batch_size(self):
         """calculate global batch size"""
@@ -302,28 +340,29 @@ class VLATrainer(TrainerUtils):
             )
 
     def _init_checkpointing(self):
-        """Initialize checkpoint directory and handle checkpoint loading."""
+        """Resolve a full-state resume or an explicit weights-only warm start."""
         self.checkpoint_dir = os.path.join(self.config.output_dir, "checkpoints")
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
-        # 获取预训练检查点和是否恢复训练的标志
         pretrained_checkpoint = getattr(self.config.trainer, "pretrained_checkpoint", None)
         is_resume = getattr(self.config.trainer, "is_resume", False)
         self.resume_from_checkpoint = pretrained_checkpoint
         if is_resume:
-            # 恢复训练状态
             resume_from_checkpoint, self.completed_steps = self._get_latest_checkpoint(self.checkpoint_dir)
-            
             if resume_from_checkpoint:
                 self.resume_from_checkpoint = resume_from_checkpoint
-                self.model = self.load_pretrained_backbones(self.model, self.resume_from_checkpoint, reload_modules=None)
-                logger.info(f"Resuming training from checkpoint: {self.resume_from_checkpoint}, steps: {self.completed_steps}")
+                self.resume_state_checkpoint = resume_from_checkpoint
+                logger.info(
+                    f"Will resume full training state from {resume_from_checkpoint}, "
+                    f"steps: {self.completed_steps}"
+                )
                 return None
-            else:
-                logger.warning(f"No valid checkpoint found in {self.checkpoint_dir}. Starting training from scratch.")
-                self.completed_steps = 0
+            logger.warning(
+                f"No complete state checkpoint found in {self.checkpoint_dir}. "
+                "Starting training from scratch."
+            )
+            self.completed_steps = 0
 
-        # 加载预训练权重
         if pretrained_checkpoint:
             reload_modules = getattr(self.config.trainer, "reload_modules", None)
             self.model = self.load_pretrained_backbones(self.model, pretrained_checkpoint, reload_modules=reload_modules)
@@ -336,53 +375,126 @@ class VLATrainer(TrainerUtils):
     
 
     def _load_checkpoint(self, checkpoint_path):
-        """load checkpoint"""
+        """Load model, optimizer, scheduler, and RNG state."""
         self.accelerator.load_state(checkpoint_path)
         self.accelerator.print(f"Resumed from checkpoint: {checkpoint_path}")
 
+    @staticmethod
+    def _atomic_torch_save(value, destination: str) -> None:
+        """Write a checkpoint without exposing a partially written final file."""
+        temporary = f"{destination}.incomplete"
+        with open(temporary, "wb") as output_file:
+            torch.save(value, output_file)
+            output_file.flush()
+            os.fsync(output_file.fileno())
+        os.replace(temporary, destination)
+
+    @staticmethod
+    def _atomic_json_save(value: dict, destination: str) -> None:
+        temporary = f"{destination}.incomplete"
+        with open(temporary, "w", encoding="utf-8") as output_file:
+            json.dump(value, output_file, sort_keys=True)
+            output_file.write("\n")
+            output_file.flush()
+            os.fsync(output_file.fileno())
+        os.replace(temporary, destination)
+
     def _save_checkpoint(self):
-        """save current training state"""
+        """Atomically publish resumable state and optional inference weights."""
+        checkpoint_stem = f"steps_{self.completed_steps}"
+        state_checkpoint = os.path.join(
+            self.checkpoint_dir, f"{checkpoint_stem}_state"
+        )
+        temporary_state_checkpoint = f"{state_checkpoint}.incomplete"
+        model_checkpoint = os.path.join(
+            self.checkpoint_dir, f"{checkpoint_stem}_pytorch_model.pt"
+        )
+        manifest_path = os.path.join(
+            self.checkpoint_dir, f"{checkpoint_stem}_complete.json"
+        )
 
-        # ZeRO-3 consolidation is a collective operation. Every rank must enter
-        # get_state_dict(), even though only rank 0 writes the consolidated file.
-        state_dict = self.accelerator.get_state_dict(self.model)
+        # Every rank performs the same conflict check, avoiding a rank-zero
+        # exception that would strand peers at the next collective barrier.
+        if os.path.exists(manifest_path):
+            raise FileExistsError(
+                f"Refusing to overwrite complete checkpoint: {manifest_path}"
+            )
         if self.accelerator.is_main_process:
+            for stale_path in (temporary_state_checkpoint, state_checkpoint):
+                if os.path.exists(stale_path):
+                    shutil.rmtree(stale_path)
+        self.accelerator.wait_for_everyone()
 
-            checkpoint_path = os.path.join(self.checkpoint_dir, f"steps_{self.completed_steps}")
-            # save model state
-            torch.save(state_dict, checkpoint_path + "_pytorch_model.pt")
+        # For DeepSpeed this collectively saves ZeRO-3 model shards, CPUAdam,
+        # RNG state, and the separately registered raw LR scheduler.
+        self.accelerator.save_state(temporary_state_checkpoint)
+        self.accelerator.wait_for_everyone()
+        if self.accelerator.is_main_process:
+            os.replace(temporary_state_checkpoint, state_checkpoint)
+        self.accelerator.wait_for_everyone()
 
-            # save training metadata
+        if self.accelerator.is_main_process:
             summary_data = {
                 "steps": self.completed_steps,
             }
             with open(os.path.join(self.config.output_dir, "summary.jsonl"), "a") as f:
                 f.write(json.dumps(summary_data) + "\n")
-            self.accelerator.print(f"✅ Checkpoint saved at {checkpoint_path}")
-            # ✅ Save accessed configuration only
             if isinstance(self.config, AccessTrackedConfig):
                 logger.info("📊 Saving accessed configuration...")
                 output_dir = Path(self.config.output_dir)
-                # self.config.save_accessed_config(
-                #     output_dir / "config.json", 
-                #     use_original_values=False
-                # )
                 self.config.save_accessed_config(
                     output_dir / "config.yaml", 
                     use_original_values=False 
                 )
                 logger.info("✅ Configuration files saved")
 
-        del state_dict
+            # Publish the resumable state before optional consolidation. If a
+            # later gather/export fails, auto-resume can still recover safely.
+            self._atomic_json_save(
+                {
+                    "format_version": 1,
+                    "steps": self.completed_steps,
+                    "consumed_data_batches": self.consumed_data_batches,
+                    "state_dir": os.path.basename(state_checkpoint),
+                    "model_file": None,
+                },
+                manifest_path,
+            )
+            self.accelerator.print(f"✅ Checkpoint saved at {state_checkpoint}")
+        self.accelerator.wait_for_everyone()
+
+        save_consolidated = bool(
+            self.config.trainer.get("save_consolidated_checkpoints", False)
+        )
+        if save_consolidated:
+            # ZeRO-3 consolidation is collective. This export is not required
+            # for resume and can be disabled on large models.
+            state_dict = self.accelerator.get_state_dict(self.model)
+            if self.accelerator.is_main_process:
+                self._atomic_torch_save(state_dict, model_checkpoint)
+                self._atomic_json_save(
+                    {
+                        "format_version": 1,
+                        "steps": self.completed_steps,
+                        "consumed_data_batches": self.consumed_data_batches,
+                        "state_dir": os.path.basename(state_checkpoint),
+                        "model_file": os.path.basename(model_checkpoint),
+                    },
+                    manifest_path,
+                )
+            del state_dict
         self.accelerator.wait_for_everyone()
 
     def _log_metrics(self, metrics):
         """record training metrics"""
         if self.completed_steps % self.config.trainer.logging_frequency == 0:
             if dist.get_rank() == 0:
-                # add learning rate for each param group
-                for group, lr in zip(self.optimizer.param_groups, self.lr_scheduler.get_last_lr()):
-                    metrics[f"learning_rate/{group['name']}"] = lr
+                # Log the learning rates used by the real DeepSpeed optimizer.
+                for index, group in enumerate(
+                    self.optimizer.param_groups
+                ):
+                    group_name = group.get("name", f"group_{index}")
+                    metrics[f"learning_rate/{group_name}"] = float(group["lr"])
 
                 # add epoch info
                 metrics["epoch"] = round(self.completed_steps * self.config.trainer.gradient_accumulation_steps  / len(self.vla_train_dataloader), 2)
@@ -394,7 +506,33 @@ class VLATrainer(TrainerUtils):
 
     def _create_data_iterators(self):
         """create data iterators"""
-        self.vla_iter = iter(self.vla_train_dataloader)
+        self.vla_epoch_count = 0
+        consumed_batches = self.consumed_data_batches
+        if self.resume_state_checkpoint and consumed_batches > 0:
+            batches_per_epoch = len(self.vla_train_dataloader)
+            if batches_per_epoch <= 0:
+                raise RuntimeError("Prepared training dataloader is empty")
+            epoch, batch_offset = divmod(consumed_batches, batches_per_epoch)
+            self.vla_epoch_count = epoch
+            dataset = getattr(self.vla_train_dataloader, "dataset", None)
+            set_dataset_epoch = getattr(dataset, "set_epoch", None)
+            if callable(set_dataset_epoch):
+                set_dataset_epoch(epoch)
+            sampler = getattr(self.vla_train_dataloader, "sampler", None)
+            set_sampler_epoch = getattr(sampler, "set_epoch", None)
+            if callable(set_sampler_epoch):
+                set_sampler_epoch(epoch)
+            resume_dataloader = self.accelerator.skip_first_batches(
+                self.vla_train_dataloader, num_batches=batch_offset
+            )
+            self.vla_iter = iter(resume_dataloader)
+            logger.info(
+                "Resuming data stream at epoch=%s, batch_offset=%s",
+                epoch,
+                batch_offset,
+            )
+        else:
+            self.vla_iter = iter(self.vla_train_dataloader)
         # self.vlm_iter = iter(self.vlm_train_dataloader)
 
     def _get_next_batch(self):
@@ -402,13 +540,12 @@ class VLATrainer(TrainerUtils):
         try:
             batch_vla = next(self.vla_iter)
         except StopIteration:
-            if not hasattr(self, "vla_epoch_count"):
-                self.vla_epoch_count = 0
             self.vla_iter, self.vla_epoch_count = TrainerUtils._reset_dataloader(
                 self.vla_train_dataloader, self.vla_epoch_count
             )
             batch_vla = next(self.vla_iter)
 
+        self.consumed_data_batches += 1
         return batch_vla
 
     def train(self):
@@ -612,6 +749,7 @@ class VLATrainer(TrainerUtils):
                 # optimizer step
                 self.optimizer.step()
                 self.lr_scheduler.step()
+                self._sync_scheduler_lrs()
                 self.optimizer.zero_grad(set_to_none=True)
 
         step_metrics = {}
@@ -632,16 +770,40 @@ class VLATrainer(TrainerUtils):
 
     def _finalize_training(self):
         """training end processing"""
-        # save final model
-        # As above, ZeRO-3 requires every rank to participate in consolidation.
-        state_dict = self.accelerator.get_state_dict(self.model)
-        if self.accelerator.is_main_process:
-            final_checkpoint = os.path.join(self.config.output_dir, "final_model")
-            os.makedirs(final_checkpoint, exist_ok=True)
-            torch.save(state_dict, os.path.join(final_checkpoint, "pytorch_model.pt"))
-            logger.info(f"Training complete. Final model saved at {final_checkpoint}")
+        save_final_training_state = bool(
+            self.config.trainer.get("save_final_training_state", True)
+        )
+        final_manifest = os.path.join(
+            self.checkpoint_dir, f"steps_{self.completed_steps}_complete.json"
+        )
+        should_save_training_state = (
+            save_final_training_state and not os.path.exists(final_manifest)
+        )
+        if dist.is_initialized():
+            decision = torch.tensor(
+                [int(should_save_training_state if dist.get_rank() == 0 else False)],
+                device=self.accelerator.device,
+                dtype=torch.int32,
+            )
+            dist.broadcast(decision, src=0)
+            should_save_training_state = bool(decision.item())
+        if should_save_training_state:
+            self._save_checkpoint()
 
-        del state_dict
+        save_final_model = bool(self.config.trainer.get("save_final_model", True))
+        if save_final_model:
+            # ZeRO-3 requires every rank to participate in consolidation.
+            state_dict = self.accelerator.get_state_dict(self.model)
+            if self.accelerator.is_main_process:
+                final_checkpoint = os.path.join(self.config.output_dir, "final_model")
+                os.makedirs(final_checkpoint, exist_ok=True)
+                self._atomic_torch_save(
+                    state_dict, os.path.join(final_checkpoint, "pytorch_model.pt")
+                )
+                logger.info(f"Training complete. Final model saved at {final_checkpoint}")
+            del state_dict
+        else:
+            logger.info("Training complete. Final model save disabled for this run.")
 
         # close W&B
         if self.accelerator.is_main_process:
@@ -666,8 +828,8 @@ def main(cfg) -> None:
     # prepare data
     vla_train_dataloader = prepare_data(cfg=cfg, accelerator=accelerator, output_dir=output_dir)
 
-    # set optimizer and scheduler
-    optimizer, lr_scheduler = setup_optimizer_and_scheduler(model=vla, cfg=cfg)
+    # The scheduler is created only after DeepSpeed prepares the optimizer.
+    optimizer = setup_optimizer(model=vla, cfg=cfg)
 
     # create trainer
     # Run VLA Training
@@ -676,7 +838,6 @@ def main(cfg) -> None:
         model=vla,
         vla_train_dataloader=vla_train_dataloader,
         optimizer=optimizer,
-        lr_scheduler=lr_scheduler,
         accelerator=accelerator,
     )
 

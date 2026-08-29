@@ -12,6 +12,10 @@ NUM_WORKERS="${NUM_WORKERS:-8}"
 MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-80000}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-10000}"
 EVAL_INTERVAL="${EVAL_INTERVAL:-2000}"
+LOGGING_FREQUENCY="${LOGGING_FREQUENCY:-10}"
+SAVE_CONSOLIDATED_CHECKPOINTS="${SAVE_CONSOLIDATED_CHECKPOINTS:-false}"
+SAVE_FINAL_TRAINING_STATE="${SAVE_FINAL_TRAINING_STATE:-true}"
+SAVE_FINAL_MODEL="${SAVE_FINAL_MODEL:-true}"
 DATA_ROOT_DIR="${DATA_ROOT_DIR:-/root/autodl-tmp/datasets/endowam_pseudo_z60}"
 BASE_MODEL="${BASE_MODEL:-/root/autodl-tmp/models/Cosmos-Predict2.5-2B}"
 RUN_ROOT_DIR="${RUN_ROOT_DIR:-/root/autodl-tmp/outputs/DiT4DiT}"
@@ -110,7 +114,7 @@ cp "$0" "${OUTPUT_DIR}/$(basename "$0")"
 RESUME="${RESUME:-auto}"
 if [[ "${RESUME}" == "auto" ]]; then
   if find "${OUTPUT_DIR}/checkpoints" -maxdepth 1 \
-      -name 'steps_*_pytorch_model.pt' -print -quit 2>/dev/null | grep -q .; then
+      -name 'steps_*_complete.json' -print -quit 2>/dev/null | grep -q .; then
     RESUME=true
   else
     RESUME=false
@@ -120,6 +124,23 @@ if [[ "${RESUME}" != "true" && "${RESUME}" != "false" ]]; then
   echo "RESUME must be auto, true, or false; got ${RESUME}" >&2
   exit 1
 fi
+for integer_name in \
+  NUM_PROCESSES PER_DEVICE_BATCH_SIZE GRADIENT_ACCUMULATION_STEPS \
+  MAX_TRAIN_STEPS SAVE_INTERVAL EVAL_INTERVAL LOGGING_FREQUENCY; do
+  integer_value="${!integer_name}"
+  if [[ ! "${integer_value}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "${integer_name} must be a positive integer; got ${integer_value}" >&2
+    exit 1
+  fi
+done
+for boolean_name in \
+  SAVE_CONSOLIDATED_CHECKPOINTS SAVE_FINAL_TRAINING_STATE SAVE_FINAL_MODEL; do
+  boolean_value="${!boolean_name}"
+  if [[ "${boolean_value}" != "true" && "${boolean_value}" != "false" ]]; then
+    echo "${boolean_name} must be true or false; got ${boolean_value}" >&2
+    exit 1
+  fi
+done
 
 GLOBAL_BATCH_SIZE=$((NUM_PROCESSES * PER_DEVICE_BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS))
 LOG_FILE="${OUTPUT_DIR}/train_$(date +%Y%m%d_%H%M%S).log"
@@ -131,6 +152,10 @@ echo "Output: ${OUTPUT_DIR}"
 echo "Resume: ${RESUME}"
 echo "Max steps: ${MAX_TRAIN_STEPS}"
 echo "Gradient accumulation: ${GRADIENT_ACCUMULATION_STEPS}"
+echo "Logging frequency: ${LOGGING_FREQUENCY}"
+echo "Save consolidated checkpoints: ${SAVE_CONSOLIDATED_CHECKPOINTS}"
+echo "Save final training state: ${SAVE_FINAL_TRAINING_STATE}"
+echo "Save final model: ${SAVE_FINAL_MODEL}"
 echo "Log: ${LOG_FILE}"
 
 accelerate launch \
@@ -147,6 +172,10 @@ accelerate launch \
   --trainer.max_train_steps "${MAX_TRAIN_STEPS}" \
   --trainer.save_interval "${SAVE_INTERVAL}" \
   --trainer.eval_interval "${EVAL_INTERVAL}" \
+  --trainer.logging_frequency "${LOGGING_FREQUENCY}" \
+  --trainer.save_consolidated_checkpoints "${SAVE_CONSOLIDATED_CHECKPOINTS}" \
+  --trainer.save_final_training_state "${SAVE_FINAL_TRAINING_STATE}" \
+  --trainer.save_final_model "${SAVE_FINAL_MODEL}" \
   --trainer.is_resume "${RESUME}" \
   --run_root_dir "${RUN_ROOT_DIR}" \
   --run_id "${RUN_ID}" \
