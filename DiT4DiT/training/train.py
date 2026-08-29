@@ -786,6 +786,17 @@ class VLATrainer(TrainerUtils):
             )
         # total loss (for quick monitoring only)
         step_metrics["total_loss"] = total_loss.item() if torch.is_tensor(total_loss) else float(total_loss)
+        if torch.cuda.is_available():
+            gibibyte = float(1024 ** 3)
+            step_metrics["gpu_memory_allocated_gib"] = (
+                torch.cuda.memory_allocated(self.accelerator.device) / gibibyte
+            )
+            step_metrics["gpu_memory_reserved_gib"] = (
+                torch.cuda.memory_reserved(self.accelerator.device) / gibibyte
+            )
+            step_metrics["gpu_memory_peak_gib"] = (
+                torch.cuda.max_memory_allocated(self.accelerator.device) / gibibyte
+            )
         return step_metrics
 
     def _finalize_training(self):
