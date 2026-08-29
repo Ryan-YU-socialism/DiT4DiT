@@ -488,6 +488,18 @@ class TrainerUtils:
                     raise ValueError("unsupported checkpoint format")
                 if int(manifest["steps"]) != completed_steps:
                     raise ValueError("manifest step does not match its filename")
+                checkpoint_excludes_frozen = bool(
+                    manifest.get("exclude_frozen_parameters", False)
+                )
+                configured_excludes_frozen = bool(
+                    self.config.trainer.get(
+                        "checkpoint_exclude_frozen_parameters", False
+                    )
+                )
+                if checkpoint_excludes_frozen != configured_excludes_frozen:
+                    raise ValueError(
+                        "checkpoint frozen-parameter policy does not match the run config"
+                    )
                 consumed_data_batches = int(
                     manifest.get(
                         "consumed_data_batches",

@@ -109,6 +109,10 @@ trainer:
   eval_with_stage1: false
   logging_frequency: 10
   save_consolidated_checkpoints: false
+  # Frozen text-encoder/VAE weights are deterministically reloaded from the
+  # pinned local Cosmos base model. Keep optimizer/trainable state while
+  # avoiding roughly 17 GB of redundant frozen weights per checkpoint.
+  checkpoint_exclude_frozen_parameters: true
   save_final_training_state: true
   save_final_model: true
 

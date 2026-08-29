@@ -396,7 +396,17 @@ class VLATrainer(TrainerUtils):
 
     def _load_checkpoint(self, checkpoint_path):
         """Load model, optimizer, scheduler, and RNG state."""
-        self.accelerator.load_state(checkpoint_path)
+        exclude_frozen_parameters = bool(
+            self.config.trainer.get(
+                "checkpoint_exclude_frozen_parameters", False
+            )
+        )
+        load_model_kwargs = (
+            {"load_module_strict": False}
+            if exclude_frozen_parameters
+            else {}
+        )
+        self.accelerator.load_state(checkpoint_path, **load_model_kwargs)
         self.accelerator.print(f"Resumed from checkpoint: {checkpoint_path}")
 
     @staticmethod
@@ -447,7 +457,20 @@ class VLATrainer(TrainerUtils):
 
         # For DeepSpeed this collectively saves ZeRO-3 model shards, CPUAdam,
         # RNG state, and the separately registered raw LR scheduler.
-        self.accelerator.save_state(temporary_state_checkpoint)
+        exclude_frozen_parameters = bool(
+            self.config.trainer.get(
+                "checkpoint_exclude_frozen_parameters", False
+            )
+        )
+        save_model_kwargs = (
+            {"exclude_frozen_parameters": True}
+            if exclude_frozen_parameters
+            else {}
+        )
+        self.accelerator.save_state(
+            temporary_state_checkpoint,
+            **save_model_kwargs,
+        )
         self.accelerator.wait_for_everyone()
         if self.accelerator.is_main_process:
             os.replace(temporary_state_checkpoint, state_checkpoint)
@@ -477,6 +500,7 @@ class VLATrainer(TrainerUtils):
                     "consumed_data_batches": self.consumed_data_batches,
                     "state_dir": os.path.basename(state_checkpoint),
                     "model_file": None,
+                    "exclude_frozen_parameters": exclude_frozen_parameters,
                 },
                 manifest_path,
             )
@@ -499,6 +523,7 @@ class VLATrainer(TrainerUtils):
                         "consumed_data_batches": self.consumed_data_batches,
                         "state_dir": os.path.basename(state_checkpoint),
                         "model_file": os.path.basename(model_checkpoint),
+                        "exclude_frozen_parameters": exclude_frozen_parameters,
                     },
                     manifest_path,
                 )
