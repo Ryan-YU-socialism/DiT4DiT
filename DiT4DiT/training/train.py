@@ -659,8 +659,14 @@ class VLATrainer(TrainerUtils):
 
         if self.accelerator.is_main_process:
             predicted_actions = output_dict["normalized_actions"]  # B, T, D
-            action_horizon = int(self.model.config.framework.action_model.future_action_window_size) + 1
-            action_dim = int(self.model.config.framework.action_model.action_dim)
+            # After ``accelerator.prepare`` self.model is a DeepSpeedEngine,
+            # whose own ``config`` attribute is a plain DeepSpeed dict. Read
+            # model-shape settings from the trainer's parsed experiment config
+            # to avoid that attribute collision.
+            action_horizon = int(
+                self.config.framework.action_model.future_action_window_size
+            ) + 1
+            action_dim = int(self.config.framework.action_model.action_dim)
             actions = np.asarray(actions)[:, -action_horizon:, :action_dim]
             action_mask = np.asarray(action_mask)[:, -action_horizon:, :action_dim].astype(bool)
 
