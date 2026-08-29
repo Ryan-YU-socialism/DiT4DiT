@@ -177,12 +177,32 @@ def setup_lr_scheduler(
     recipe. Creating the scheduler before ``accelerator.prepare`` leaves it
     attached to the discarded AdamW instance and silently trains at LR=0.
     """
+    scheduler_specific_kwargs = dict(
+        cfg.trainer.scheduler_specific_kwargs.items()
+    )
+    if (
+        cfg.trainer.lr_scheduler_type == "cosine_with_min_lr"
+        and "min_lr" in scheduler_specific_kwargs
+        and "min_lr_rate" not in scheduler_specific_kwargs
+    ):
+        # Transformers derives this ratio from optimizer.defaults["lr"], but
+        # DeepSpeed's ZeRO optimizer intentionally exposes no defaults mapping.
+        # Use the configured base LR explicitly; this is algebraically
+        # equivalent and keeps the same ratio for every parameter group.
+        base_learning_rate = float(cfg.trainer.learning_rate.base)
+        if base_learning_rate <= 0:
+            raise ValueError("trainer.learning_rate.base must be positive")
+        scheduler_specific_kwargs["min_lr_rate"] = (
+            float(scheduler_specific_kwargs.pop("min_lr"))
+            / base_learning_rate
+        )
+
     return get_scheduler(
         name=cfg.trainer.lr_scheduler_type,
         optimizer=optimizer,
         num_warmup_steps=cfg.trainer.num_warmup_steps,
         num_training_steps=cfg.trainer.max_train_steps,
-        scheduler_specific_kwargs=cfg.trainer.scheduler_specific_kwargs,  # minimum learning rate
+        scheduler_specific_kwargs=scheduler_specific_kwargs,
     )
 
 
