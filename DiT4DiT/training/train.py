@@ -650,12 +650,19 @@ class VLATrainer(TrainerUtils):
         eval_with_stage1 = bool(
             self.config.trainer.get("eval_with_stage1", True)
         )
-        output_dict = self.model.predict_action(
-            examples=examples,
-            use_ddim=True,
-            num_ddim_steps=20,
-            disable_stage1=not eval_with_stage1,
-        )
+        was_training = self.model.training
+        self.model.eval()
+        try:
+            output_dict = self.model.predict_action(
+                examples=examples,
+                use_ddim=True,
+                num_ddim_steps=20,
+                disable_stage1=not eval_with_stage1,
+            )
+        finally:
+            # Keep evaluation dropout-free without changing the mode observed
+            # by the following training/backward step.
+            self.model.train(was_training)
 
         if self.accelerator.is_main_process:
             predicted_actions = output_dict["normalized_actions"]  # B, T, D
