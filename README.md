@@ -9,6 +9,7 @@
 ## Contents
 
 - [Research snapshot](#research-snapshot)
+- [EndoWAM developer handoff](#endowam-developer-handoff)
 - [Method](#method)
 - [Implementation map](#implementation-map) and [status](#implementation-status)
 - [Installation](#installation), [data](#data), and [configuration](#configuration)
@@ -25,13 +26,19 @@
 | --- | --- |
 | 研究分支 | `linjs` |
 | 上游基线 | `upstream/main@66a6f3a` |
-| 本 README 覆盖的实现 | `linjs@6895241` 及此前提交 |
+| 本 README 覆盖的实现 | `linjs@c77f7c0` 及此前提交 |
 | 记录日期 | 2026-08-29 |
 | 基础模型 | NVIDIA Cosmos-Predict2.5-2B |
 | 当前研究阶段 | Stage 1：候选生成、未来预测、零样本选择 |
 | 不在当前范围 | RL selector、RL policy improvement、完整 FOREWARN 复现 |
 
 论文实验应额外保存 release tag 或完整 Git commit；不能只记录分支名。若此表之后未同步更新，以实验目录内保存的 `config.yaml`、日志中的 Git commit 和 checkpoint manifest 为准。
+
+## EndoWAM developer handoff
+
+准备修改 `endowam_pseudo_z60` 适配时，先阅读 [`docs/endowam_pseudo_z60.md`](docs/endowam_pseudo_z60.md)。该文档固定了离散动作/数据契约、端到端代码路径、ren5 性能依据、checkpoint 兼容边界和安全修改流程。实际环境准备、tmux、supervisor、停止与恢复命令见 [`examples/EndoWAM/README.md`](examples/EndoWAM/README.md)。
+
+文档基线时训练保持停止；此前正式 run 在 step 5,000 的首个周期 checkpoint 前停止，因此没有可恢复 state。仓库不会自动启动训练，重新运行前必须再次执行 preflight。
 
 ## Abstract
 
@@ -174,6 +181,7 @@ $$
 | 分布式训练与 checkpoint | `DiT4DiT/training/train.py` | Accelerate、DeepSpeed、resume、日志 |
 | WebSocket 推理服务 | `deployment/model_server/` | simulator/model 环境解耦 |
 | Benchmark adapters | `examples/LIBERO/`, `examples/Robocasa_tabletop/` | 观测预处理、反归一化、环境执行 |
+| EndoWAM developer guide | `docs/endowam_pseudo_z60.md` | 数据契约、代码路径、修改边界、checkpoint 语义 |
 | EndoWAM recipes | `examples/EndoWAM/` | 数据同步、硬件检查、持久训练 |
 
 ## Implementation status
@@ -225,11 +233,11 @@ DiT4DiT/
 ### Requirements
 
 - Python 3.10+
-- CUDA 12.4+；当前远程配方使用 CUDA 12.8 PyTorch wheels
+- CUDA 12.4+；ren5 使用 PyTorch 2.5.1 + CUDA 12.4，RTX PRO 6000/Blackwell 配方使用 CUDA 12.8 wheels
 - 支持 BF16 的 NVIDIA GPU
 - Stage 1 推理需要一条 reference 和 $K$ 条 candidate rollouts，显存近似随 $K$ 线性增长
 
-建议使用独立环境：
+ren5 应直接运行 `examples/EndoWAM/train_files/setup_ren5_env.sh`，不要套用 Blackwell wheel。下面是 CUDA 12.8/RTX PRO 6000 等新主机的通用独立环境示例：
 
 ```bash
 conda create -n dit4dit-stage1 python=3.10 -y
@@ -306,7 +314,7 @@ bash examples/EndoWAM/train_files/sync_endowam_from_drive.sh \
   gdrive:endowam_pseudo_z60
 ```
 
-凭据必须保存在 `rclone` 用户配置中，不能写入仓库、脚本或实验配置。详见 `examples/EndoWAM/README.md`。
+凭据必须保存在 `rclone` 用户配置中，不能写入仓库、脚本或实验配置。数据字段、shape 和离散语义见 `docs/endowam_pseudo_z60.md`；远端同步与运行见 `examples/EndoWAM/README.md`。
 
 ## Configuration
 
@@ -418,17 +426,18 @@ accelerate launch \
 | 4 x H800 | `run_endowam_4xh800.sh` | ZeRO-2 | 32 |
 | 4 x RTX PRO 6000 96GB | `run_endowam_4xpro6000.sh` | ZeRO-2 | 32 |
 | 2 x RTX PRO 6000 96GB | `run_endowam_2xpro6000.sh` | ZeRO-2 | 32 |
-| ren5: 2 x RTX 3090 24GB | `run_endowam_ren5_2x3090.sh` | ZeRO-3 + CPU offload | 32 |
+| ren5: 2 x RTX 3090 24GB | `run_endowam_ren5_2x3090.sh` | ZeRO-2 + CPU optimizer offload | 6 |
 
 长训练必须运行在 `tmux` 或调度器中，并保留完整命令和日志。正式运行前先做 smoke test：
 
 ```bash
-RUN_ID=dit4dit_endowam_smoke \
-MAX_TRAIN_STEPS=200 SAVE_INTERVAL=200 EVAL_INTERVAL=200 \
-bash examples/EndoWAM/train_files/run_endowam_4xpro6000.sh
+RUN_ID=dit4dit_endowam_smoke_$(date +%Y%m%d_%H%M%S) \
+MAX_TRAIN_STEPS=20 NUM_WARMUP_STEPS=2 \
+SAVE_INTERVAL=20 EVAL_INTERVAL=20 \
+bash examples/EndoWAM/train_files/run_endowam_ren5_2x3090.sh
 ```
 
-确认 loss 有限、显存稳定、checkpoint 可恢复后，再启动完整 80,000-step run。
+确认 loss 有限、显存稳定、checkpoint 可恢复后，再启动完整 run。ren5 当前计划为 100,000 steps、warmup 500、save interval 5,000、eval interval 100；H800/PRO 6000 配方仍保留各自的 80,000-step 默认值。不要混用不同硬件配方的 YAML、Accelerate YAML 和 DeepSpeed JSON。
 
 ### Losses and logging
 
@@ -459,7 +468,7 @@ bash examples/EndoWAM/train_files/run_endowam_4xpro6000.sh
 ├── summary.jsonl
 ├── checkpoints/
 │   ├── steps_N_state/                 # model/optimizer/scheduler/RNG state
-│   ├── steps_N_pytorch_model.pt       # consolidated inference weights
+│   ├── steps_N_pytorch_model.pt       # optional consolidated inference weights
 │   └── steps_N_complete.json          # atomic completion manifest
 └── final_model/
     └── pytorch_model.pt
@@ -467,7 +476,9 @@ bash examples/EndoWAM/train_files/run_endowam_4xpro6000.sh
 
 周期 checkpoint 只有在 `steps_N_complete.json` 发布后才被视为完整。当前 full-state resume 恢复 model、optimizer、scheduler、RNG 和 dataloader position；`pretrained_checkpoint` 且 `is_resume: false` 表示 weights-only warm start。
 
-不要单独移动 `.pt`。`from_pretrained()` 会从 checkpoint 上两级读取 `config.yaml` 和 `dataset_statistics.json`，并使用 strict state-dict loading。
+ren5 设置 `checkpoint_exclude_frozen_parameters: true`，不在每个 state 中重复保存冻结的 text encoder/VAE；恢复时这些权重来自配置固定的本地 Cosmos base model，并以 non-strict module load 接受缺失 frozen keys。manifest 中记录的 exclusion policy 必须和 run config 一致。默认 `save_consolidated_checkpoints: false`，所以周期 checkpoint 不保证包含单文件推理权重。
+
+不要单独移动 `.pt`。加载 consolidated inference checkpoint 时，`from_pretrained()` 还会从 checkpoint 上两级读取 `config.yaml` 和 `dataset_statistics.json`。full-state resume 则必须保留 state directory、completion manifest 和匹配的本地 base model。
 
 ## Inference
 
@@ -623,6 +634,11 @@ pytest -q \
 | `b85d0a9` | full-state 安全恢复和原子 checkpoint 发布 |
 | `5d2b756` | 支持 ren5 smoke-test accumulation overrides |
 | `6895241` | 在 ren5 NVML filter 中转发 PyTorch 查询，兼容故障 GPU 隔离 |
+| `d22a705`–`a16509e` | 修正 BF16 离散 target、无效梯度、显存日志、evaluation 与 supervisor |
+| `b54deff`–`36ac0c0` | 落实 ren5 schedule，并修正离散 evaluation shape/dropout 行为 |
+| `73610f4` | 加入 ren5 ZeRO-2 benchmark 配方 |
+| `e61bbbd` | 将 ren5 默认调优为 batch 3、accumulation 1 和 CPUAdam threads |
+| `c77f7c0` | checkpoint 排除冻结权重，同时保持可验证的 full-state resume |
 
 ## Limitations
 
