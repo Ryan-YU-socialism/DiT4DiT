@@ -33,7 +33,8 @@ export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/mnt/data-hdd2/ljs/.cache/dit4dit/xdg}"
 export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-/mnt/data-hdd2/ljs/.cache/dit4dit/torch_extensions}"
 export CUDA_CACHE_PATH="${CUDA_CACHE_PATH:-/mnt/data-hdd2/ljs/.cache/dit4dit/cuda}"
 export TMPDIR="${TMPDIR:-/mnt/data-hdd2/ljs/.cache/dit4dit/tmp}"
-export CUDA_HOME="${CUDA_HOME:-${ENV_PREFIX}}"
+export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda-12.4}"
+export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.6}"
 export PYTHONNOUSERSITE=1
 export WANDB_MODE="${WANDB_MODE:-offline}"
 
