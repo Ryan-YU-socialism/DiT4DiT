@@ -6,25 +6,25 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 文档基线 | `linjs@c77f7c0` |
+| 文档基线 | `linjs@5f9f8e8` |
 | 数据集 | `endowam_pseudo_z60`，LeRobot v2.x |
 | 子集 | `ureter`、`ercp`、`esophagus`，等权 mixture |
 | 动作 | 64 steps × 3 axes，语义值 `{-1, 0, +1}` |
 | 状态 | 1 step × 3 axes，同样是离散语义值 |
 | 图像 | `video.endoscope`，抽取 `[0, 16, 32, 48, 63]` |
-| 主配置 | `DiT4DiT/config/endowam/dit4dit_endowam_pseudo_z60_ren5_2x3090.yaml` |
-| ren5 配方 | 2 × RTX 3090，BF16，ZeRO-2 + CPU optimizer offload |
-| 全局 batch | `3 × 2 × 1 = 6` |
+| 主配置 | `DiT4DiT/config/endowam/dit4dit_endowam_pseudo_z60_ren5_3x3090.yaml` |
+| ren5 配方 | 3 × RTX 3090，BF16，ZeRO-2 + CPU optimizer offload |
+| 全局 batch | `3 × 3 × 1 = 9` |
 | 训练计划 | 100,000 steps；warmup 500；save 5,000；eval 100 |
-| 当前运行状态 | 已停止；此前正式 run 在首个 checkpoint 前停止，没有可恢复 state |
+| 旧 run 状态 | 2-card 正式 run 在首个 checkpoint 前停止，没有可恢复 state |
 
-最后一行是交接时的运行状态，不应被理解为仓库会自动启动或保持训练。修改前应重新检查远端进程、GPU 和 run 目录。
+README 不记录瞬时运行状态。修改或启动前应重新检查远端 tmux、worker、GPU、run 目录和 completion manifest。
 
 ## Start reading here
 
 建议按以下顺序阅读，先掌握配置和数据契约，再进入模型实现：
 
-1. `DiT4DiT/config/endowam/dit4dit_endowam_pseudo_z60_ren5_2x3090.yaml`：完整实验语义。
+1. `DiT4DiT/config/endowam/dit4dit_endowam_pseudo_z60_ren5_3x3090.yaml`：完整实验语义。
 2. `DiT4DiT/dataloader/gr00t_lerobot/mixtures.py`：三个子集的注册和采样权重。
 3. `DiT4DiT/dataloader/gr00t_lerobot/data_config.py`：EndoWAM 字段映射、64-step action window 和禁止归一化的 transform。
 4. `DiT4DiT/dataloader/gr00t_lerobot/datasets.py`：LeRobot sample、padding、mask 和视频 delta 的实际装配。
@@ -122,7 +122,7 @@ Stage 1 推理另外生成 reference future 和多条 candidate future，使用�
 
 ## Configuration that currently matters
 
-ren5 主配置中的有效默认值：
+ren5 三卡主配置中的有效默认值：
 
 ```yaml
 framework:
@@ -160,16 +160,16 @@ trainer:
 
 ## ren5 performance rationale
 
-ren5 当前只有 CUDA indices 0 和 1 两张 RTX 3090 可用于训练；GPU 2 有 NVML/PCIe 故障。两个健康 GPU 间没有可用 P2P，因此旧 ZeRO-3 方案通信代价很高。已验证的折中是：
+ren5 的 CUDA indices 0、1、2 当前均可见。GPU 2 曾有 NVML/PCIe 故障，因此三卡启动的硬门槛是每卡 CUDA allocation/BF16 compute 和 3-rank NCCL collective 都重新通过。三卡之间没有 NVLink，旧 ZeRO-3 方案通信代价很高。当前折中是：
 
 - BF16；
 - ZeRO-2，optimizer state CPU offload；
-- per-device batch 3；gradient accumulation 1；global batch 6；
+- per-device batch 3；gradient accumulation 1；global batch 9；
 - `OMP_NUM_THREADS=6`，其余 BLAS thread pool 为 1；
 - Cosmos gradient checkpointing 开启；
 - 数据 workers 每 rank 2。
 
-该配方测得约 4.9–5.2 秒/step、峰值显存约 21.82 GiB；旧 global-batch-6 ZeRO-3 约 10.1 秒/step。数据加载约 0.001–0.003 秒，不是当前瓶颈。
+两卡基线曾测得约 4.9–5.2 秒/step、峰值显存约 21.82 GiB；旧 global-batch-6 ZeRO-3 约 10.1 秒/step。三卡 step time 必须以正式配置的稳定日志重新估计。数据加载约 0.001–0.003 秒，不是当前瓶颈。
 
 模型计算较重的根本原因是 joint path 含两次 Cosmos forward，并且 gradient checkpointing 在 backward 重算。优化时应先 profile 这两部分，不要默认增加 DataLoader workers。
 
@@ -246,7 +246,7 @@ checkpoints/
 
 ```text
 repository  /mnt/data-hdd2/ljs/DiT4DiT
-conda env   /mnt/data-hdd2/ljs/.conda/envs/dit4dit-ren5
+conda env   /mnt/data-hdd2/ljs/.conda/envs/endoguard
 dataset     /mnt/data-hdd3/ljs/datasets/endowam_pseudo_z60
 base model  /mnt/data-hdd2/ljs/models/Cosmos-Predict2.5-2B
 run root    /mnt/data-hdd3/ljs/experiments/DiT4DiT
@@ -256,8 +256,8 @@ Drive 凭据只应存在于远端用户的 `rclone` 配置；不得把账号、t
 
 ## Known operational traps
 
-- 不要使用 GPU 2，除非硬件已修复并重新通过 CUDA、NVML 和 NCCL 检查。
-- `run_endowam_ren5_2x3090.sh` 是直接 runner；长期任务应由 `supervise_endowam_ren5.sh` 启动。
+- GPU 2 曾经故障；每次三卡正式启动都必须重新通过 CUDA、NVML 和 NCCL 检查。
+- `run_endowam_ren5_3x3090.sh` 是直接 runner；长期任务应由 `supervise_endowam_ren5_3x3090.sh` 启动。
 - supervisor 用 `flock` 防止同一个 `RUN_ID` 重复启动，并把训练语义参数锁在 `supervisor_logs/launch_config.env`。不同参数不能静默续跑同一 run。
 - supervisor 默认最多尝试 3 次；OOM、依赖缺失、脏工作树等确定性错误不会自动重试。
 - 人工 `Ctrl-C` 时 `tee` 也可能收到信号并打印 logging failure；中断仍不会自动重试。停止后要用进程和 GPU 状态确认所有 rank 已退出。

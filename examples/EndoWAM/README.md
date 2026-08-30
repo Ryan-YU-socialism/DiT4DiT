@@ -2,19 +2,19 @@
 
 本目录保存 EndoWAM 数据同步、环境准备、训练 preflight、DeepSpeed launch 和断线恢复脚本。代码结构与数据契约见 [`docs/endowam_pseudo_z60.md`](../../docs/endowam_pseudo_z60.md)。
 
-> 当前训练保持停止。交接前的正式 run 在首个周期 checkpoint 之前结束，没有可恢复 checkpoint。本页命令是运维手册，不会由仓库自动执行。
+> 旧 2-card 正式 run 在首个周期 checkpoint 之前结束，没有可恢复 checkpoint。本页命令是运维手册；当前是否在训练必须以 ren5 的 tmux、worker、GPU 和 completion manifest 为准。
 
 ## Recommended ren5 recipe
 
-ren5 当前使用两张健康的 RTX 3090 24GB（CUDA indices 0、1）。第三张卡有 NVML/PCIe 故障，必须保持不可见，直到硬件修复并重新验证。
+ren5 当前配方使用三张 RTX 3090 24GB（CUDA indices 0、1、2）。GPU 2 曾有 NVML/PCIe 故障，因此每次正式启动前都必须重新通过 CUDA allocation 和 3-rank NCCL collective 检查。
 
 | 项目 | 值 |
 | --- | --- |
-| GPU | 2 × RTX 3090 24GB |
+| GPU | 3 × RTX 3090 24GB |
 | PyTorch / CUDA | 2.5.1 / 12.4 |
 | precision | BF16 |
 | DeepSpeed | ZeRO-2 + CPU optimizer offload |
-| batch | per-device 3，accumulation 1，global 6 |
+| batch | per-device 3，accumulation 1，global 9 |
 | CPU threads | OpenMP 6/rank；MKL/OpenBLAS/NumExpr 1 |
 | max steps | 100,000 |
 | warmup | 500 |
@@ -26,7 +26,7 @@ ren5 当前使用两张健康的 RTX 3090 24GB（CUDA indices 0、1）。第三�
 
 ```text
 repository  /mnt/data-hdd2/ljs/DiT4DiT
-conda env   /mnt/data-hdd2/ljs/.conda/envs/dit4dit-ren5
+conda env   /mnt/data-hdd2/ljs/.conda/envs/endoguard
 dataset     /mnt/data-hdd3/ljs/datasets/endowam_pseudo_z60
 base model  /mnt/data-hdd2/ljs/models/Cosmos-Predict2.5-2B
 run root    /mnt/data-hdd3/ljs/experiments/DiT4DiT
@@ -44,8 +44,10 @@ run root    /mnt/data-hdd3/ljs/experiments/DiT4DiT
 | `setup_ren5_env.sh` | 创建隔离 conda prefix，安装 PyTorch 2.5.1+cu124 和项目依赖 |
 | `build_ren5_nvml_filter.sh` | 构建仅对训练进程生效的 NVML device-count filter |
 | `run_endowam_ren5_2x3090.sh` | ren5 环境/硬件默认值包装器 |
+| `run_endowam_ren5_3x3090.sh` | ren5 三卡正式配方包装器 |
 | `run_endowam_4xh800.sh` | 共用 preflight 和 Accelerate launch 实现，名字是历史遗留 |
 | `supervise_endowam_ren5.sh` | 防重复、锁参数、auto-resume、有限重试 |
+| `supervise_endowam_ren5_3x3090.sh` | 三卡 supervisor 入口；复用通用守护逻辑 |
 | `run_endowam_4xpro6000.sh` | 4 × RTX PRO 6000 替代配方 |
 | `run_endowam_2xpro6000.sh` | 2 × RTX PRO 6000 替代配方 |
 
@@ -85,7 +87,7 @@ bash examples/EndoWAM/train_files/download_cosmos_ren5.sh
 bash examples/EndoWAM/train_files/setup_ren5_env.sh
 ```
 
-该脚本使用独立 conda prefix，隔离共享 profile 中的 user-site packages 和 pip extra index，并验证两张 RTX 3090、BF16、PyTorch/CUDA 版本以及 nvcc。
+该脚本创建基础 `dit4dit-ren5` conda prefix，隔离共享 profile 中的 user-site packages 和 pip extra index。当前三卡运行使用其经过验证的独立 clone `endoguard`；必须核对 PyTorch 2.5.1+cu124、Accelerate 1.12.0 和 DeepSpeed 0.18.4。
 
 ## Preflight before every run
 
@@ -96,8 +98,8 @@ cd /mnt/data-hdd2/ljs/DiT4DiT
 git status --short --branch
 git rev-parse HEAD
 
-CUDA_VISIBLE_DEVICES=0,1 \
-  /mnt/data-hdd2/ljs/.conda/envs/dit4dit-ren5/bin/python - <<'PY'
+CUDA_VISIBLE_DEVICES=0,1,2 \
+  /mnt/data-hdd2/ljs/.conda/envs/endoguard/bin/python - <<'PY'
 import torch
 print(torch.__version__, torch.version.cuda, torch.cuda.device_count())
 for i in range(torch.cuda.device_count()):
@@ -124,7 +126,7 @@ MAX_TRAIN_STEPS=20 \
 NUM_WARMUP_STEPS=2 \
 SAVE_INTERVAL=20 \
 EVAL_INTERVAL=20 \
-bash examples/EndoWAM/train_files/run_endowam_ren5_2x3090.sh
+bash examples/EndoWAM/train_files/run_endowam_ren5_3x3090.sh
 ```
 
 至少确认：两个 rank 正常、loss finite、峰值显存不过载、step time 稳定、checkpoint 发布 manifest，并用同一个 smoke `RUN_ID` 验证一次 `RESUME=auto`。
@@ -137,7 +139,7 @@ bash examples/EndoWAM/train_files/run_endowam_ren5_2x3090.sh
 
 ```bash
 tmux new-session -d -s endowam-ren5 \
-  'cd /mnt/data-hdd2/ljs/DiT4DiT && exec bash examples/EndoWAM/train_files/supervise_endowam_ren5.sh'
+  'cd /mnt/data-hdd2/ljs/DiT4DiT && exec bash examples/EndoWAM/train_files/supervise_endowam_ren5_3x3090.sh'
 ```
 
 查看而不进入：
@@ -145,7 +147,7 @@ tmux new-session -d -s endowam-ren5 \
 ```bash
 tmux capture-pane -pt endowam-ren5:0 -S -120
 tail -n 120 \
-  /mnt/data-hdd3/ljs/experiments/DiT4DiT/dit4dit_endowam_pseudo_z60_ren5_2x3090/supervisor_logs/supervisor.log
+  /mnt/data-hdd3/ljs/experiments/DiT4DiT/dit4dit_endowam_pseudo_z60_ren5_3x3090/supervisor_logs/supervisor.log
 nvidia-smi
 ```
 
@@ -230,4 +232,4 @@ ren5 不可用时，优先单机 4 × RTX PRO 6000 96GB；对应 launcher 为 `r
 
 RTX PRO 6000 是 Blackwell 配方，需使用兼容的 CUDA 12.8 PyTorch build 和 Triton ≥ 3.3。租机页面的 GPU 型号不足以确认通信拓扑；创建实例后仍要检查 `nvidia-smi topo -m`。AutoDL 路径默认在 `/root/autodl-tmp`，与 ren5 路径不同。
 
-H800/PRO 6000 配方仍保留其原始 80,000-step 默认值；用户指定的 100,000/500/5,000/100 schedule 已落实在 ren5 配置和 wrapper 中。不要混用两个硬件配方的 YAML、Accelerate YAML 和 DeepSpeed JSON。
+双 3090 配方仍作为 GPU 2 再次故障时的 fallback，global batch 为 6；不要直接用双卡 ZeRO-2 state 恢复三卡 run。H800/PRO 6000 配方仍保留其原始 80,000-step 默认值；用户指定的 100,000/500/5,000/100 schedule 已落实在 ren5 配置和 wrapper 中。不要混用硬件配方的 YAML、Accelerate YAML 和 DeepSpeed JSON。

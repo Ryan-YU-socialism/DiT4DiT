@@ -26,7 +26,7 @@
 | --- | --- |
 | 研究分支 | `linjs` |
 | 上游基线 | `upstream/main@66a6f3a` |
-| 本 README 覆盖的实现 | `linjs@c77f7c0` 及此前提交 |
+| 本 README 覆盖的实现 | `linjs@5f9f8e8` 及此前提交 |
 | 记录日期 | 2026-08-29 |
 | 基础模型 | NVIDIA Cosmos-Predict2.5-2B |
 | 当前研究阶段 | Stage 1：候选生成、未来预测、零样本选择 |
@@ -38,7 +38,7 @@
 
 准备修改 `endowam_pseudo_z60` 适配时，先阅读 [`docs/endowam_pseudo_z60.md`](docs/endowam_pseudo_z60.md)。该文档固定了离散动作/数据契约、端到端代码路径、ren5 性能依据、checkpoint 兼容边界和安全修改流程。实际环境准备、tmux、supervisor、停止与恢复命令见 [`examples/EndoWAM/README.md`](examples/EndoWAM/README.md)。
 
-文档基线时训练保持停止；此前正式 run 在 step 5,000 的首个周期 checkpoint 前停止，因此没有可恢复 state。仓库不会自动启动训练，重新运行前必须再次执行 preflight。
+此前的 2-card 正式 run 在 step 5,000 的首个周期 checkpoint 前停止，因此没有可恢复 state。当前运行状态不能从 README 推断；连接 ren5 后必须检查 tmux、supervisor、worker、GPU 和 completion manifest。
 
 ## Abstract
 
@@ -426,7 +426,8 @@ accelerate launch \
 | 4 x H800 | `run_endowam_4xh800.sh` | ZeRO-2 | 32 |
 | 4 x RTX PRO 6000 96GB | `run_endowam_4xpro6000.sh` | ZeRO-2 | 32 |
 | 2 x RTX PRO 6000 96GB | `run_endowam_2xpro6000.sh` | ZeRO-2 | 32 |
-| ren5: 2 x RTX 3090 24GB | `run_endowam_ren5_2x3090.sh` | ZeRO-2 + CPU optimizer offload | 6 |
+| ren5: 3 x RTX 3090 24GB | `run_endowam_ren5_3x3090.sh` | ZeRO-2 + CPU optimizer offload | 9 |
+| ren5 fallback: 2 x RTX 3090 24GB | `run_endowam_ren5_2x3090.sh` | ZeRO-2 + CPU optimizer offload | 6 |
 
 长训练必须运行在 `tmux` 或调度器中，并保留完整命令和日志。正式运行前先做 smoke test：
 
@@ -434,7 +435,7 @@ accelerate launch \
 RUN_ID=dit4dit_endowam_smoke_$(date +%Y%m%d_%H%M%S) \
 MAX_TRAIN_STEPS=20 NUM_WARMUP_STEPS=2 \
 SAVE_INTERVAL=20 EVAL_INTERVAL=20 \
-bash examples/EndoWAM/train_files/run_endowam_ren5_2x3090.sh
+bash examples/EndoWAM/train_files/run_endowam_ren5_3x3090.sh
 ```
 
 确认 loss 有限、显存稳定、checkpoint 可恢复后，再启动完整 run。ren5 当前计划为 100,000 steps、warmup 500、save interval 5,000、eval interval 100；H800/PRO 6000 配方仍保留各自的 80,000-step 默认值。不要混用不同硬件配方的 YAML、Accelerate YAML 和 DeepSpeed JSON。
@@ -639,6 +640,7 @@ pytest -q \
 | `73610f4` | 加入 ren5 ZeRO-2 benchmark 配方 |
 | `e61bbbd` | 将 ren5 默认调优为 batch 3、accumulation 1 和 CPUAdam threads |
 | `c77f7c0` | checkpoint 排除冻结权重，同时保持可验证的 full-state resume |
+| `5f9f8e8` | 新增独立 ren5 3 × RTX 3090 配方、runner 和 supervisor wrapper |
 
 ## Limitations
 
