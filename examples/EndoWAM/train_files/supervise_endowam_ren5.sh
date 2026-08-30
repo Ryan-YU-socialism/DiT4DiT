@@ -31,6 +31,7 @@ ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-DiT4DiT/config/deepseeds/deepspeed_endow
 DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-DiT4DiT/config/deepseeds/endowam_zero2_2x3090.json}"
 ENV_PREFIX="${ENV_PREFIX:-/mnt/data-hdd2/ljs/.conda/envs/dit4dit-ren5}"
 EXPECTED_GPU_SUBSTRING="${EXPECTED_GPU_SUBSTRING:-RTX 3090}"
+RUNNER_SCRIPT="${RUNNER_SCRIPT:-run_endowam_ren5_2x3090.sh}"
 
 if [[ ! "${MAX_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "MAX_ATTEMPTS must be a positive integer; got ${MAX_ATTEMPTS}" >&2
@@ -50,6 +51,10 @@ for thread_variable in \
 done
 if ! command -v flock >/dev/null 2>&1; then
   echo "flock is required to prevent duplicate supervisors for the same run." >&2
+  exit 2
+fi
+if [[ "${RUNNER_SCRIPT}" == */* || ! -f "${SCRIPT_DIR}/${RUNNER_SCRIPT}" ]]; then
+  echo "RUNNER_SCRIPT must name a runner in ${SCRIPT_DIR}; got ${RUNNER_SCRIPT}" >&2
   exit 2
 fi
 
@@ -101,6 +106,7 @@ launch_config_candidate="$(mktemp "${SUPERVISOR_LOG_DIR}/launch_config.XXXXXX")"
   printf 'DEEPSPEED_CONFIG=%q\n' "${DEEPSPEED_CONFIG}"
   printf 'ENV_PREFIX=%q\n' "${ENV_PREFIX}"
   printf 'EXPECTED_GPU_SUBSTRING=%q\n' "${EXPECTED_GPU_SUBSTRING}"
+  printf 'RUNNER_SCRIPT=%q\n' "${RUNNER_SCRIPT}"
 } > "${launch_config_candidate}"
 if [[ -e "${LOCKED_LAUNCH_CONFIG}" ]]; then
   if ! cmp -s "${LOCKED_LAUNCH_CONFIG}" "${launch_config_candidate}"; then
@@ -166,7 +172,7 @@ for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
   ENV_PREFIX="${ENV_PREFIX}" \
   EXPECTED_GPU_SUBSTRING="${EXPECTED_GPU_SUBSTRING}" \
   RESUME=auto \
-    bash "${SCRIPT_DIR}/run_endowam_ren5_2x3090.sh" \
+    bash "${SCRIPT_DIR}/${RUNNER_SCRIPT}" \
       2>&1 | tee -a "${attempt_log}"
   pipeline_status=("${PIPESTATUS[@]}")
   set -e
