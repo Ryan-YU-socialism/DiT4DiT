@@ -48,14 +48,10 @@ export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.6}"
 export PYTHONNOUSERSITE=1
 export WANDB_MODE="${WANDB_MODE:-offline}"
 
-# The process-local shim was originally required while GPU 2 was faulty.
-# Limiting it to all three devices is effectively a pass-through count while
-# retaining compatibility with the already-built ren5 runtime.
-NVML_FILTER_DIR="${NVML_FILTER_DIR:-/mnt/data-hdd2/ljs/.cache/dit4dit/nvml_filter}"
-if [[ -s "${NVML_FILTER_DIR}/libnvidia-ml.so.1" ]]; then
-  export REN5_NVML_MAX_DEVICES=3
-  export LD_LIBRARY_PATH="${NVML_FILTER_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-fi
+# The two-card recipe needs a process-local NVML shim to hide the historically
+# faulty third device. Do not load that partial shim here: this recipe uses all
+# three cards and must expose the system NVML library unchanged to NCCL and
+# diagnostics such as nvidia-smi.
 
 mkdir -p \
   "${HF_HOME}" "${TORCH_HOME}" "${XDG_CACHE_HOME}" \
