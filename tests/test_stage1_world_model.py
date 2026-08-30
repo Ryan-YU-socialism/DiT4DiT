@@ -167,11 +167,21 @@ class _FakeActionModel:
         return self.candidates
 
 
-def _make_stage1_stub(backbone, action_model, num_candidates=3, valid_action_dim=4):
+def _make_stage1_stub(
+    backbone,
+    action_model,
+    num_candidates=3,
+    valid_action_dim=4,
+    state_dim=2,
+):
     stub = DiT4DiT.__new__(DiT4DiT)
     stub.config = SimpleNamespace(
         framework=SimpleNamespace(
-            stage1=SimpleNamespace(num_candidates=num_candidates, valid_action_dim=valid_action_dim)
+            stage1=SimpleNamespace(
+                num_candidates=num_candidates,
+                valid_action_dim=valid_action_dim,
+            ),
+            action_model=SimpleNamespace(state_dim=state_dim),
         )
     )
     stub.stage1_enabled = True
